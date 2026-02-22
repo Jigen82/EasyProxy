@@ -1,0 +1,54 @@
+name: Sync upstream (Koyeb + Render)
+
+on:
+  schedule:
+    - cron: '0 * * * *' # ogni ora
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/stremio-manager/EasyProxy.git || true
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Sync fork with upstream
+        run: |
+          if git diff --quiet HEAD upstream/main; then
+            echo "Repo già allineato all'upstream"
+            exit 0
+          fi
+
+          echo "Cambiamenti trovati, sincronizzo il fork"
+
+          # preserva il workflow
+          cp .github/workflows/sync-upstream.yml /tmp/sync-upstream.yml
+
+          # mirror totale
+          git reset --hard upstream/main
+
+          # ripristina il workflow
+          mkdir -p .github/workflows
+          mv /tmp/sync-upstream.yml .github/workflows/sync-upstream.yml
+
+          git add .
+          git commit -m "Sync fork with upstream"
+          git push origin main --force
