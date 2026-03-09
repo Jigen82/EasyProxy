@@ -378,7 +378,7 @@ class HLSProxy:
                     if key not in self.extractors:
                         self.extractors[key] = VixSrcExtractor(request_headers, proxies=GLOBAL_PROXIES)
                     return self.extractors[key]
-                elif host in ["sportsonline", "sportzonline", "sprtsonline"]:
+                elif host in ["sportsonline", "sportzonline", "sprtsonline", "sportsnline"]:
                     key = "sportsonline"
                     if key not in self.extractors:
                         self.extractors[key] = SportsonlineExtractor(request_headers, proxies=GLOBAL_PROXIES)
@@ -491,7 +491,7 @@ class HLSProxy:
                 if key not in self.extractors:
                     self.extractors[key] = VixSrcExtractor(request_headers, proxies=proxy_list)
                 return self.extractors[key]
-            elif any(domain in url for domain in ["sportzonline", "sportsonline", "sprtsonline"]):
+            elif any(domain in url for domain in ["sportzonline", "sportsonline", "sprtsonline", "sportsnline"]):
                 key = "sportsonline"
                 proxy = get_proxy_for_url('sportsonline', TRANSPORT_ROUTES, GLOBAL_PROXIES)
                 proxy_list = [proxy] if proxy else []
