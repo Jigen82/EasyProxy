@@ -458,7 +458,7 @@ class DLHDExtractor:
                     'User-Agent': self.USER_AGENT,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Referer': 'https://dlhd.dad/',
+                    'Referer': f'https://{urlparse(iframe_url).netloc}/',
                 }
                 
                 # Step 1: Fetch iframe page using robust request (reuses session)
@@ -590,7 +590,7 @@ class DLHDExtractor:
                     try:
                         session = await self._get_session()
                         headers = self.base_headers.copy()
-                        headers['Referer'] = 'https://dlhd.link/' 
+                        headers['Referer'] = f'https://{urlparse(lovecdn_url).netloc}/' 
                         async with session.get(lovecdn_url, headers=headers, ssl=False) as resp:
                             if resp.status == 200:
                                 content = await resp.text()

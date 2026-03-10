@@ -477,9 +477,11 @@ class HLSProxy:
                 if key not in self.extractors:
                     self.extractors[key] = VavooExtractor(request_headers, proxies=proxy_list)
                 return self.extractors[key]
-            elif any(domain in url for domain in ["daddylive", "dlhd", "daddyhd"]) or re.search(r'watch\.php\?id=\d+', url):
+            elif any(domain in url for domain in ["daddylive", "dlhd", "daddyhd", "dlstreams.top"]) or re.search(r'watch\.php\?id=\d+', url):
                 key = "dlhd"
-                proxy = get_proxy_for_url('dlhd.dad', TRANSPORT_ROUTES, GLOBAL_PROXIES)
+                # ✅ Support for new domain 'dlstreams.top' and improved proxy selection
+                domain_to_check = 'dlstreams.top' if 'dlstreams.top' in url else 'dlhd.dad'
+                proxy = get_proxy_for_url(domain_to_check, TRANSPORT_ROUTES, GLOBAL_PROXIES)
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
                     self.extractors[key] = DLHDExtractor(request_headers, proxies=proxy_list)
