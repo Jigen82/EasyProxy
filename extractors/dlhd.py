@@ -207,15 +207,29 @@ class DLHDExtractor:
         channel_key_match = re.search(
             r"const\s+CHANNEL_KEY\s*=\s*['\"]([^'\"]+)['\"]", iframe_content
         )
-        m3u8_server_match = re.search(
-            r"const\s+M3U8_SERVER\s*=\s*['\"]([^'\"]+)['\"]", iframe_content
-        )
 
-        if not channel_key_match or not m3u8_server_match:
+        m3u8_server = None
+        m3u8_server_match = re.search(
+            r"(?:const|let)\s+M3U8_SERVER\s*=\s*['\"]([^'\"]+)['\"]",
+            iframe_content,
+        )
+        if m3u8_server_match:
+            m3u8_server = m3u8_server_match.group(1).strip()
+        else:
+            m3u8_servers_match = re.search(
+                r"const\s+M3U8_SERVERS\s*=\s*\[(.*?)\]", iframe_content, re.DOTALL
+            )
+            if m3u8_servers_match:
+                candidates = re.findall(
+                    r"['\"]([^'\"]+)['\"]", m3u8_servers_match.group(1)
+                )
+                if candidates:
+                    m3u8_server = candidates[0].strip()
+
+        if not channel_key_match or not m3u8_server:
             return None
 
         channel_key = channel_key_match.group(1).strip()
-        m3u8_server = m3u8_server_match.group(1).strip()
         if not channel_key or not m3u8_server:
             return None
 
