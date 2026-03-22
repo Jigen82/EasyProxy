@@ -179,7 +179,11 @@ class DLHDExtractor:
             ).replace("{CHANNEL}", channel_key)
 
     def _build_stream_headers(
-        self, iframe_url: str, channel_key: str, auth_token: str, secret_key: str = None
+        self,
+        iframe_url: str,
+        channel_key: str,
+        auth_token: str | None = None,
+        secret_key: str = None,
     ) -> dict:
         """Build standard stream headers."""
         iframe_origin = f"https://{urlparse(iframe_url).netloc}"
@@ -187,13 +191,61 @@ class DLHDExtractor:
             "User-Agent": self.USER_AGENT,
             "Referer": iframe_url,
             "Origin": iframe_origin,
-            "Authorization": f"Bearer {auth_token}",
             "X-Channel-Key": channel_key,
             "X-User-Agent": self.USER_AGENT,
         }
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
         if secret_key:
             headers["X-Secret-Key"] = secret_key
         return headers
+
+    def _extract_client_side_player_config(
+        self, iframe_content: str
+    ) -> Dict[str, Any] | None:
+        """Extract player config from newer iframe pages that build the stream in client-side JS."""
+        channel_key_match = re.search(
+            r"const\s+CHANNEL_KEY\s*=\s*['\"]([^'\"]+)['\"]", iframe_content
+        )
+        m3u8_server_match = re.search(
+            r"const\s+M3U8_SERVER\s*=\s*['\"]([^'\"]+)['\"]", iframe_content
+        )
+
+        if not channel_key_match or not m3u8_server_match:
+            return None
+
+        channel_key = channel_key_match.group(1).strip()
+        m3u8_server = m3u8_server_match.group(1).strip()
+        if not channel_key or not m3u8_server:
+            return None
+
+        derived_server_lookup_url = f"https://{m3u8_server}/server_lookup"
+        derived_stream_cdn_template = (
+            f"https://{m3u8_server}/proxy/top1/cdn/{{CHANNEL}}/mono.css"
+        )
+        derived_stream_other_template = (
+            f"https://{m3u8_server}/proxy/{{SERVER_KEY}}/{{CHANNEL}}/mono.css"
+        )
+
+        self.server_lookup_url = derived_server_lookup_url
+        self.stream_cdn_template = derived_stream_cdn_template
+        self.stream_other_template = derived_stream_other_template
+
+        inline_server_lookup = re.search(
+            r"server_lookup\?channel_id=.*?const\s+sk\s*=\s*data\.server_key",
+            iframe_content,
+            re.DOTALL,
+        )
+        if not inline_server_lookup:
+            return None
+
+        return {
+            "channel_key": channel_key,
+            "m3u8_server": m3u8_server,
+            "server_lookup_url": derived_server_lookup_url,
+            "stream_cdn_template": derived_stream_cdn_template,
+            "stream_other_template": derived_stream_other_template,
+        }
 
     def _extract_lovecdn_expiry(self, stream_url: str) -> float | None:
         """Extract expiry timestamp from LoveCDN token when available."""
@@ -1227,6 +1279,33 @@ class DLHDExtractor:
 
         # Validazione minima
         if not params.get("auth_token"):
+            client_side_config = self._extract_client_side_player_config(iframe_content)
+            if client_side_config:
+                channel_key = client_side_config["channel_key"]
+                server_lookup_url = client_side_config["server_lookup_url"]
+                logger.info(
+                    "✅ Rilevato player config client-side without bearer token"
+                )
+
+                server_key = await self._fetch_server_key(
+                    channel_key,
+                    iframe_url,
+                    custom_lookup_url=f"{server_lookup_url}?channel_id={channel_key}",
+                )
+                logger.info(f"✅ Server key: {server_key}")
+
+                stream_url = self._build_stream_url(server_key, channel_key)
+                logger.info(f"✅ Stream URL built: {stream_url}")
+
+                stream_headers = self._build_stream_headers(iframe_url, channel_key)
+
+                return {
+                    "destination_url": stream_url,
+                    "request_headers": stream_headers,
+                    "mediaflow_endpoint": self.mediaflow_endpoint,
+                    "expires_at": 0,
+                }
+
             raise ExtractorError("Unable to extract JWT from new flow.")
 
         # Se manca channel key, prova a estrarla dall'URL
