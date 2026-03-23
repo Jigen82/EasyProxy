@@ -280,6 +280,9 @@ class HLSProxy:
     def __init__(self, ffmpeg_manager=None):
         self.extractors = {}
         self.ffmpeg_manager = ffmpeg_manager
+        self.dlhd_compat_state = {}
+        self.dlhd_compat_manifest_window = 12
+        self.dlhd_compat_fallback_ttl = 180
 
         # Inizializza il playlist_builder se il modulo è disponibile
         if PlaylistBuilder:
@@ -305,6 +308,75 @@ class HLSProxy:
         # Cache for proxy sessions (proxy_url -> session)
         # This reuses connections for the same proxy to improve performance
         self.proxy_sessions = {}
+
+    def _get_dlhd_compat_state_key(self, request, target_url: str) -> str:
+        """Build a stable key for auto FFmpeg fallback on a DLHD channel."""
+        client_id = request.headers.get("X-Forwarded-For") or request.remote or "local"
+        client_id = client_id.split(",")[0].strip() or "local"
+
+        channel_key = target_url
+        if DLHDExtractor:
+            try:
+                channel_id = DLHDExtractor.extract_channel_id(target_url)
+                if channel_id:
+                    channel_key = channel_id
+            except Exception:
+                pass
+
+        return f"{client_id}:{channel_key}"
+
+    def _should_use_dlhd_ffmpeg_compat(self, request, target_url: str, extractor) -> bool:
+        """
+        Try direct first, then promote the client/channel pair to FFmpeg when we
+        observe rapid manifest re-open attempts that usually indicate playback
+        never stabilized on the direct stream.
+        """
+        mode = request.query.get("use_ffmpeg", "auto").strip().lower()
+        if mode in {"1", "true", "force", "ffmpeg"}:
+            return True
+        if mode in {"0", "false", "off", "direct"}:
+            return False
+
+        if (
+            not self.ffmpeg_manager
+            or not request.path.endswith("manifest.m3u8")
+            or not DLHDExtractor
+            or not isinstance(extractor, DLHDExtractor)
+        ):
+            return False
+
+        now = time.time()
+        state_key = self._get_dlhd_compat_state_key(request, target_url)
+        state = self.dlhd_compat_state.get(state_key, {})
+
+        if state.get("fallback_until", 0) > now:
+            return True
+
+        last_manifest_at = state.get("last_manifest_at", 0)
+        if last_manifest_at and now - last_manifest_at <= self.dlhd_compat_manifest_window:
+            manifest_attempts = state.get("manifest_attempts", 0) + 1
+        else:
+            manifest_attempts = 1
+
+        state["last_manifest_at"] = now
+        state["manifest_attempts"] = manifest_attempts
+
+        rapid_retry = manifest_attempts >= 2 and (
+            request.headers.get("Icy-MetaData") == "1"
+            or "Range" in request.headers
+        )
+        repeated_retry = manifest_attempts >= 4
+
+        if rapid_retry or repeated_retry:
+            state["fallback_until"] = now + self.dlhd_compat_fallback_ttl
+            self.dlhd_compat_state[state_key] = state
+            logger.info(
+                f"[FFmpeg Compat] Auto fallback armed for {state_key} after {manifest_attempts} rapid manifest attempts."
+            )
+            return True
+
+        self.dlhd_compat_state[state_key] = state
+        return False
 
     @staticmethod
     def _compute_key_headers(
@@ -957,7 +1029,9 @@ class HLSProxy:
             try:
                 # Passa il flag force_refresh all'estrattore
                 result = await extractor.extract(
-                    target_url, force_refresh=force_refresh
+                    target_url,
+                    force_refresh=force_refresh,
+                    request_headers=combined_headers,
                 )
                 stream_url = result["destination_url"]
                 stream_headers = result.get("request_headers", {})
@@ -1027,6 +1101,67 @@ class HLSProxy:
                     )
                 else:
                     logger.debug("   No h_ params found in query string.")
+
+                use_dlhd_ffmpeg_compat = (
+                    ".mpd" not in stream_url
+                    and "dash" not in stream_url.lower()
+                    and self._should_use_dlhd_ffmpeg_compat(
+                        request, target_url, extractor
+                    )
+                )
+
+                if use_dlhd_ffmpeg_compat:
+                    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+                    host = request.headers.get("X-Forwarded-Host", request.host)
+                    proxy_base = f"{scheme}://{host}"
+                    encoded_stream_url = urllib.parse.quote(stream_url, safe="")
+                    header_params = "".join(
+                        [
+                            f"&h_{urllib.parse.quote(key)}={urllib.parse.quote(value)}"
+                            for key, value in stream_headers.items()
+                        ]
+                    )
+
+                    api_password = request.query.get("api_password")
+                    if api_password:
+                        header_params += f"&api_password={api_password}"
+                    if request.query.get("no_bypass") == "1":
+                        header_params += "&no_bypass=1"
+
+                    compat_manifest_url = (
+                        f"{proxy_base}/proxy/hls/manifest.m3u8"
+                        f"?d={encoded_stream_url}{header_params}"
+                    )
+                    logger.info(
+                        f"[FFmpeg Compat] Routing DLHD request through FFmpeg: {compat_manifest_url}"
+                    )
+
+                    playlist_rel_path = await self.ffmpeg_manager.get_stream(
+                        compat_manifest_url
+                    )
+                    if playlist_rel_path:
+                        local_url = f"{proxy_base}/ffmpeg_stream/{playlist_rel_path}"
+                        master_playlist = (
+                            "#EXTM3U\n"
+                            "#EXT-X-VERSION:3\n"
+                            '#EXT-X-STREAM-INF:BANDWIDTH=6000000,NAME="Live"\n'
+                            f"{local_url}\n"
+                        )
+                        return web.Response(
+                            text=master_playlist,
+                            content_type="application/vnd.apple.mpegurl",
+                            headers={
+                                "Access-Control-Allow-Origin": "*",
+                                "Cache-Control": "no-cache",
+                            },
+                        )
+
+                    logger.warning(
+                        "FFmpeg compatibility fallback failed to initialize. Falling back to direct proxy."
+                    )
+                    self.dlhd_compat_state.pop(
+                        self._get_dlhd_compat_state_key(request, target_url), None
+                    )
 
                 # Stream URL resolved
                 # ✅ MPD/DASH handling based on MPD_MODE
@@ -1420,7 +1555,7 @@ class HLSProxy:
             extractor = await self.get_extractor(
                 url, dict(request.headers), host=host_param
             )
-            result = await extractor.extract(url)
+            result = await extractor.extract(url, request_headers=dict(request.headers))
 
             stream_url = result["destination_url"]
             stream_headers = result.get("request_headers", {})
@@ -1857,6 +1992,12 @@ class HLSProxy:
             for header in ["range", "if-none-match", "if-modified-since"]:
                 if header in request.headers:
                     headers[header] = request.headers[header]
+
+            # Manifest requests must be fetched in full. Some players probe the
+            # entry URL with a byte range, which turns upstream playlists into
+            # partial 206 responses and breaks rewriting.
+            if "manifest.m3u8" in request.path and "range" in headers:
+                del headers["range"]
 
             # Rimuovi esplicitamente headers che potrebbero rivelare l'IP originale
             for h in ["x-forwarded-for", "x-real-ip", "forwarded", "via"]:

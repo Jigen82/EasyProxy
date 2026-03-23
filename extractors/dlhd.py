@@ -61,7 +61,8 @@ class DLHDExtractor:
         )
 
         # ✅ Lista host iframe (caricata da cache o vuota)
-        self.iframe_hosts = cache_data.get("hosts", [])
+        cached_hosts = cache_data.get("hosts", [])
+        self.iframe_hosts = cached_hosts if cached_hosts else ["dlhd.so", "dlhd.sx", "daddyhd.com"]
 
         # ✅ Configurazione server dinamica dal worker (usando TEMPLATE completi)
         # Tutti i valori provengono dal worker, i fallback sono solo per il primo avvio
@@ -159,6 +160,82 @@ class DLHDExtractor:
                 logger.info(f"💾 Cache (stream + hosts) saved successfully.")
         except IOError as e:
             logger.error(f"❌ Error saving cache: {e}")
+
+    def _promote_iframe_host(self, iframe_host: str):
+        """Move a working iframe host to the front so the next startup uses it first."""
+        if not iframe_host:
+            return
+
+        normalized_host = iframe_host.strip()
+        if not normalized_host:
+            return
+
+        updated_hosts = [normalized_host]
+        for host in self.iframe_hosts:
+            host = host.strip()
+            if host and host != normalized_host:
+                updated_hosts.append(host)
+
+        if updated_hosts != self.iframe_hosts:
+            self.iframe_hosts = updated_hosts
+            self._save_cache()
+            logger.info(f"Promoted working iframe host: {normalized_host}")
+
+    def _demote_iframe_host(self, iframe_host: str):
+        """Move a failing iframe host to the end of the list."""
+        if not iframe_host:
+            return
+
+        normalized_host = iframe_host.strip()
+        if (
+            not normalized_host
+            or normalized_host not in self.iframe_hosts
+            or len(self.iframe_hosts) < 2
+        ):
+            return
+
+        updated_hosts = [
+            host for host in self.iframe_hosts if host.strip() != normalized_host
+        ]
+        updated_hosts.append(normalized_host)
+
+        if updated_hosts != self.iframe_hosts:
+            self.iframe_hosts = updated_hosts
+            self._save_cache()
+            logger.info(f"Demoted failing iframe host: {normalized_host}")
+
+    def _prioritize_iframe_hosts(self, new_hosts: list[str]) -> list[str]:
+        """Keep known-good hosts first when the worker returns a refreshed list."""
+        normalized_new_hosts = []
+        for host in new_hosts:
+            host = host.strip()
+            if host and host not in normalized_new_hosts:
+                normalized_new_hosts.append(host)
+
+        preferred_hosts = []
+        for host in self.iframe_hosts:
+            host = host.strip()
+            if host and host not in preferred_hosts:
+                preferred_hosts.append(host)
+
+        for stream_data in self._stream_data_cache.values():
+            request_headers = stream_data.get("request_headers", {})
+            referer = request_headers.get("Referer") or request_headers.get("referer")
+            if referer:
+                referer_host = urlparse(referer).netloc.strip()
+                if referer_host and referer_host not in preferred_hosts:
+                    preferred_hosts.append(referer_host)
+
+        prioritized_hosts = []
+        for host in preferred_hosts:
+            if host in normalized_new_hosts and host not in prioritized_hosts:
+                prioritized_hosts.append(host)
+
+        for host in normalized_new_hosts:
+            if host not in prioritized_hosts:
+                prioritized_hosts.append(host)
+
+        return prioritized_hosts
 
     @staticmethod
     def extract_channel_id(url: str) -> Optional[str]:
@@ -370,7 +447,7 @@ class DLHDExtractor:
                                 new_hosts.append(line)
 
                     if new_hosts:
-                        self.iframe_hosts = new_hosts
+                        self.iframe_hosts = self._prioritize_iframe_hosts(new_hosts)
                         logger.info(f"✅ Host list updated: {self.iframe_hosts}")
                         self._save_cache()
                         return True
@@ -629,12 +706,14 @@ class DLHDExtractor:
                     logger.info(
                         "Detected lovecdn.ru/lovetier.bz content - using alternative extraction"
                     )
+                    self._promote_iframe_host(iframe_host)
                     return await self._extract_lovecdn_stream(iframe_url, js_content)
 
                 # PRIORITY: Try new heuristic flow first (EPlayerAuth / obfuscated)
                 try:
                     result = await self._extract_new_auth_flow(iframe_url, js_content)
                     if result:
+                        self._promote_iframe_host(iframe_host)
                         return result
                 except Exception:
                     pass
@@ -645,6 +724,17 @@ class DLHDExtractor:
 
             except Exception as e:
                 # logger.warning(f"⚠️ Error with {iframe_host}: {e}") # Reduce logging noise
+                error_message = str(e).lower()
+                if any(
+                    token in error_message
+                    for token in [
+                        "getaddrinfo",
+                        "cannot connect",
+                        "timeout",
+                        "connection",
+                    ]
+                ):
+                    self._demote_iframe_host(iframe_host)
                 last_error = e
                 continue
 
@@ -681,14 +771,17 @@ class DLHDExtractor:
                     is_valid = False
                 elif cached_data.get("_source") == "standard":
                     # Check cooldown for LoveCDN retry
-                    last_fail = self._lovecdn_failure_time.get(channel_id, 0)
-                    if current_time - last_fail > 120:  # 2 minutes cooldown
+                    last_fail = self._lovecdn_failure_time.get(channel_id, current_time)
+                    if (
+                        channel_id in self._lovecdn_failure_time
+                        and current_time - last_fail > 120
+                    ):
                         logger.info(
                             f"⏳ LoveCDN cooldown expired for {channel_id}. Ignoring standard cache to retry LoveCDN."
                         )
                         is_valid = False
                     else:
-                        # Still in cooldown, use standard
+                        # No LoveCDN retry is due yet, use the cached standard stream.
                         is_valid = True
                         logger.info(
                             f"⏳ Using cached standard stream (LoveCDN cooldown active for {int(120 - (current_time - last_fail))}s)"
