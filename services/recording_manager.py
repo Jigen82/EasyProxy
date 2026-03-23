@@ -23,7 +23,6 @@ class StreamType(Enum):
     MPD = "mpd"           # DASH/MPD streams (converted to HLS by proxy)
     VAVOO = "vavoo"       # Vavoo.to HLS streams
     FREESHOT = "freeshot" # Freeshot/popcdn HLS streams
-    DLHD = "dlhd"         # DaddyLive HLS streams
     SPORTSONLINE = "sportsonline"  # SportsOnline HLS streams
     GENERIC = "generic"   # Unknown/generic HLS streams
 
@@ -42,7 +41,7 @@ class RecordingManager:
     """Manages FFmpeg recording processes for DVR functionality."""
 
     # Stream types that benefit from reconnection (proxy handles token refresh)
-    RECONNECT_TYPES = {StreamType.VAVOO, StreamType.FREESHOT, StreamType.DLHD,
+    RECONNECT_TYPES = {StreamType.VAVOO, StreamType.FREESHOT,
                        StreamType.SPORTSONLINE, StreamType.MPD}
 
     def __init__(self, recordings_dir: str, max_duration: int = 28800,
@@ -72,8 +71,6 @@ class RecordingManager:
             return StreamType.VAVOO
         elif 'popcdn.day' in url_lower or 'freeshot' in url_lower:
             return StreamType.FREESHOT
-        elif any(d in url_lower for d in ['daddylive', 'dlhd', 'daddyhd']):
-            return StreamType.DLHD
         elif any(d in url_lower for d in ['sportsonline', 'sportzonline']):
             return StreamType.SPORTSONLINE
 

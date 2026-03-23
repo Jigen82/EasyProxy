@@ -96,11 +96,49 @@ class SportsonlineExtractor:
             "User-Agent": self._get_request_header(
                 "User-Agent", self.base_headers["User-Agent"]
             ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,it;q=0.8",
-            "Cache-Control": "no-cache",
+            "Accept": self._get_request_header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ),
+            "Accept-Language": self._get_request_header(
+                "Accept-Language", "en-US,en;q=0.9,it;q=0.8"
+            ),
+            "Cache-Control": self._get_request_header("Cache-Control", "max-age=0"),
+            "Upgrade-Insecure-Requests": self._get_request_header(
+                "Upgrade-Insecure-Requests", "1"
+            ),
+            "Sec-Fetch-Site": self._get_request_header("Sec-Fetch-Site", "none"),
+            "Sec-Fetch-Mode": self._get_request_header(
+                "Sec-Fetch-Mode", "navigate"
+            ),
+            "Sec-Fetch-User": self._get_request_header("Sec-Fetch-User", "?1"),
+            "Sec-Fetch-Dest": self._get_request_header("Sec-Fetch-Dest", "document"),
         }
+        headers.update(
+            self._copy_request_headers(
+                {
+                    "sec-ch-ua": "Sec-CH-UA",
+                    "sec-ch-ua-mobile": "Sec-CH-UA-Mobile",
+                    "sec-ch-ua-platform": "Sec-CH-UA-Platform",
+                    "Cookie": "Cookie",
+                    "Pragma": "Pragma",
+                }
+            )
+        )
         return headers
+
+    def _build_iframe_headers(self, page_url: str, iframe_url: str) -> dict[str, str]:
+        page_headers = self._build_page_headers()
+        page_headers["Referer"] = page_url
+        page_headers["Origin"] = self._get_origin(page_url)
+        page_headers["Sec-Fetch-Site"] = (
+            "same-origin"
+            if urlparse(page_url).netloc == urlparse(iframe_url).netloc
+            else "cross-site"
+        )
+        page_headers["Sec-Fetch-Dest"] = "iframe"
+        page_headers.pop("Sec-Fetch-User", None)
+        return page_headers
 
     def _looks_like_block_page(self, html: str) -> bool:
         lowered = html.lower()
@@ -254,16 +292,15 @@ class SportsonlineExtractor:
 
             # Step 1: Fetch main page
             logger.info(f"Fetching main page: {url}")
+            main_headers = self._build_page_headers()
+            if source_referer:
+                main_headers["Referer"] = source_referer
+            if source_origin:
+                main_headers["Origin"] = source_origin
+
             main_html, main_url = await self._make_robust_request(
                 url,
-                headers={
-                    "Referer": source_referer,
-                    "Origin": source_origin,
-                    "User-Agent": user_agent,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9,it;q=0.8",
-                    "Cache-Control": "no-cache",
-                },
+                headers=main_headers,
                 timeout=15,
             )
             parsed_main = urlparse(main_url)
@@ -278,18 +315,28 @@ class SportsonlineExtractor:
                 iframe_url = self._normalize_stream_url(iframe_match.group(1), main_url)
                 logger.info(f"Found iframe URL: {iframe_url}")
 
-                # Step 2: Fetch iframe with source page as referer
-                iframe_headers = {
-                    "Referer": main_url,
-                    "Origin": main_origin,
-                    "User-Agent": user_agent,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9,it;q=0.8",
-                    "Cache-Control": "no-cache",
-                }
+                candidates = [iframe_url]
+                parsed_iframe = urlparse(iframe_url)
+                if parsed_iframe.netloc.lower() == "gotdynamic.net":
+                    candidates.extend([
+                        parsed_iframe._replace(netloc="wgstream.sx").geturl(),
+                        parsed_iframe._replace(netloc="www.wgstream.sx").geturl()
+                    ])
 
-                iframe_html, iframe_url = await self._make_robust_request(iframe_url, headers=iframe_headers, timeout=15)
-                logger.debug(f"Iframe HTML length: {len(iframe_html)}")
+                iframe_html = None
+                for candidate_url in candidates:
+                    # Step 2: Fetch iframe with source page as referer
+                    iframe_headers = self._build_iframe_headers(main_url, candidate_url)
+                    try:
+                        iframe_html, active_iframe_url = await self._make_robust_request(candidate_url, headers=iframe_headers, timeout=15, retries=1)
+                        iframe_url = active_iframe_url
+                        logger.debug(f"Iframe HTML length: {len(iframe_html)}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Failed candidate {candidate_url}: {e}")
+
+                if not iframe_html:
+                    raise ExtractorError("All iframe candidates failed (403 or connection errors).")
             else:
                 logger.warning("No iframe found on page, attempting extraction from main HTML")
 

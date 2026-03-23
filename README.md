@@ -5,7 +5,7 @@
 [![HLS](https://img.shields.io/badge/HLS-Streaming-red.svg)](https://developer.apple.com/streaming/)
 
 > **A universal proxy server for HLS, M3U8, and IPTV streaming** 🎬  
-> Native support for Vavoo, DaddyLive HD, and all streaming services  
+> Native support for Vavoo and all streaming services  
 > Compatible with Stremio addons when used as a MediaFlow Proxy  
 > Integrated web interface and zero configuration  
 
@@ -28,7 +28,7 @@
 
 | 🎯 **Universal Proxy** | 🔐 **Specialized Extractors** | ⚡ **Performance** |
 |------------------------|------------------------|-------------------|
-| HLS, M3U8, MPD, DLHD streams, VIXSRC | Vavoo, DLHD, Sportsonline, VixSrc | Async connections and keep-alive |
+| HLS, M3U8, MPD, VIXSRC | Vavoo, Sportsonline, VixSrc | Async connections and keep-alive |
 | **🔓 DRM Decryption** | **🎬 MPD to HLS** | **🔑 ClearKey Support** |
 | ClearKey via FFmpeg transcoding | Automatic DASH → HLS conversion | Server-side ClearKey for VLC |
 
@@ -199,11 +199,11 @@ GLOBAL_PROXY=http://user:pass@myproxy.com:8080
 # --- Transport Rules (TRANSPORT_ROUTES) ---
 # Advanced system for proxy routing based on URL patterns.
 # Format: {URL=pattern, PROXY=proxy_url, DISABLE_SSL=true}, {URL=pattern2, PROXY=proxy_url2, DISABLE_SSL=true}
-# - URL: pattern to search for in the URL (e.g., vavoo.to, dlhd.dad, giokko.ru)
+# - URL: pattern to search for in the URL (e.g., vavoo.to, giokko.ru)
 # - PROXY: proxy to use (leave empty for direct connection)
 # - DISABLE_SSL: to disable SSL verification
 
-TRANSPORT_ROUTES={URL=vavoo.to, PROXY=socks5://proxy1:1080, DISABLE_SSL=true}, {URL=dlhd.dad, PROXY=http://proxy2:8080, DISABLE_SSL=true}
+TRANSPORT_ROUTES={URL=vavoo.to, PROXY=socks5://proxy1:1080, DISABLE_SSL=true}
 
 # Password to protect the APIs
 API_PASSWORD=mysecretpassword
@@ -259,7 +259,7 @@ PORT=8080
 
 ### 🔍 Extractor API (`/extractor/video`)
 
-This endpoint **cannot be opened directly** without parameters. It is used to extract the direct stream URL from supported services (like Vavoo, DLHD, etc.).
+This endpoint **cannot be opened directly** without parameters. It is used to extract the direct stream URL from supported services (like Vavoo, etc.).
 
 **Info and Help:**
 If you open `/extractor` or `/extractor/video` without parameters, you will receive a JSON response with instructions and a list of supported hosts.
@@ -278,7 +278,7 @@ You must add `?url=` (or `?d=`) followed by the video link you want to process.
 2.  **Redirect directly to stream (Redirect):**
     Add `&redirect_stream=true`. Useful for putting the link directly into a player.
     ```
-    http://your-server:7860/extractor/video?url=https://daddylive.mp/stream/stream-1.php&redirect_stream=true
+    http://your-server:7860/extractor/video?url=https://vavoo.to/channel/123&redirect_stream=true
     ```
     *The server will respond with a 302 redirect to the proxy URL ready for playback.*
 
@@ -296,14 +296,14 @@ You must add `?url=` (or `?d=`) followed by the video link you want to process.
 
 **Parameters:**
 - `url` (or `d`): **(Required)** The original URL of the video or page. Supports plain text, URL Encoded, or **Base64 Encoded** links.
-- `host`: (Optional) Forces the use of a specific extractor (e.g., `vavoo`, `dlhd`, `mixdrop`, `voe`, `streamtape`, `orion`).
+- `host`: (Optional) Forces the use of a specific extractor (e.g., `vavoo`, `mixdrop`, `voe`, `streamtape`, `orion`).
 - `redirect_stream`: 
   - `true`: Immediate redirect to the playable stream.
   - `false` (default): Returns data in JSON format.
 - `api_password`: (Optional) API password if configured.
 
 **Supported Services:**
-Vavoo, DaddyLiveHD, Doodstream, F16px, Fastream, Filelions, Filemoon, Freeshot, LiveTV, Lulustream, Maxstream, Mixdrop, OKru, Orion, Sportsonline, Streamtape, Streamwish, Supervideo, Turbovidplay, Uqload, Vidmoly, Vidoza, VixSrc, Voe and Generic (for any M3U8 URL).
+Vavoo, Doodstream, F16px, Fastream, Filelions, Filemoon, Freeshot, LiveTV, Lulustream, Maxstream, Mixdrop, OKru, Orion, Sportsonline, Streamtape, Streamwish, Supervideo, Turbovidplay, Uqload, Vidmoly, Vidoza, VixSrc, Voe and Generic (for any M3U8 URL).
 
 ### 📺 Proxy Endpoints
 
@@ -367,7 +367,7 @@ Comprehensive list of all endpoints available in the server.
 ### 🔍 Extractors
 | Method | Endpoint | Description |
 |:---|:---|:---|
-| `GET` | `/extractor/video` | Extracts direct links from supported sites (Vavoo, DLHD, etc.). Returns JSON or redirect. |
+| `GET` | `/extractor/video` | Extracts direct links from supported sites (Vavoo, etc.). Returns JSON or redirect. |
 
 ### 🔐 Keys & DRM
 | Method | Endpoint | Description |
@@ -413,7 +413,6 @@ http://<server-ip>:7860/proxy/manifest.m3u8?url=<STREAM_URL>
 - **M3U playlist** - IPTV channel lists  
 - **MPD (DASH)** - Adaptive streaming with automatic HLS conversion
 - **MPD + ClearKey DRM** - Server-side CENC decryption (VLC compatible)
-- **DLHD streams** - Dynamic streams (DaddyLiveHD)
 - **VixSrc** - VOD streaming
 - **Sportsonline** - Sports streaming
 - **Mixdrop** - Video file hosting
@@ -468,12 +467,6 @@ http://<server-ip>:7860/recordings
 - Automatic API authentication
 - Optimized headers for streaming
 
-### 📡 Automatic DaddyLive HD Resolution
-
-**Features:**
-- DaddyLive HD link resolution
-- Automatic restriction bypass
-- Stream quality optimization
 
 ### ⚽ Automatic Sportsonline/Sportzonline resolution
 
@@ -490,7 +483,7 @@ http://<server-ip>:7860/builder
 
 **Complete interface for:**
 - ✅ Combining multiple playlists
-- ✅ Automatic Vavoo and DLHD management
+- ✅ Automatic Vavoo management
 - ✅ #EXTVLCOPT and #EXTHTTP support  
 - ✅ Automatic #KODIPROP ClearKey extraction
 - ✅ Automatic proxy for all streams
@@ -518,7 +511,7 @@ http://server:7860/proxy/manifest.m3u8?url=STREAM_URL&h_user-agent=CustomUA&h_re
 ### 🔄 Processing Flow
 
 1. **Stream Request** → Universal proxy endpoint
-2. **Service Detection** → Auto-detect Vavoo/DLHD/Generic
+2. **Service Detection** → Auto-detect Vavoo/Generic
 3. **URL Extraction** → Real link resolution
 4. **Proxy Stream** → Forward with optimized headers
 5. **Client Response** → Direct compatible stream
@@ -532,7 +525,6 @@ http://server:7860/proxy/manifest.m3u8?url=STREAM_URL&h_user-agent=CustomUA&h_re
 ### 🔐 Authentication Management
 
 - **Vavoo** - Automatic signature system
-- **DaddyLive** - Specialized headers  
 - **Generic** - Standard Authorization support
 
 ---
