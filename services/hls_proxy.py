@@ -91,6 +91,69 @@ if MPD_MODE == "legacy":
 
 logger = logging.getLogger(__name__)
 
+# Sportsonline host variants (including frequent typos)
+_SPORTSONLINE_EXACT_LABELS = {
+    "sportzsonline",
+    "sportzonline",
+    "sportsonline",
+    "sprtsonline",
+    "sportsnline",
+}
+_SPORTSONLINE_FALLBACK_LABEL_RE = re.compile(r"sp(?:o)?rt(?:s|z)?s?(?:o)?nline")
+
+
+def _iter_normalized_hostname_labels(value: str) -> list[str]:
+    if not value:
+        return []
+
+    raw_value = value.strip().lower()
+    parsed = urlparse(raw_value)
+    hostname = parsed.hostname
+
+    # Handle inputs like "sportzsonline.click" without scheme.
+    if not hostname and "://" not in raw_value:
+        hostname = urlparse(f"//{raw_value}").hostname
+
+    if not hostname:
+        hostname = raw_value
+
+    labels = []
+    for label in hostname.split("."):
+        normalized = re.sub(r"[^a-z]", "", label)
+        if normalized:
+            labels.append(normalized)
+
+    return labels
+
+
+def _is_sportsonline_candidate(value: str) -> bool:
+    for label in _iter_normalized_hostname_labels(value):
+        if label in _SPORTSONLINE_EXACT_LABELS:
+            return True
+        if (
+            label.startswith("sp")
+            and (label.endswith("online") or label.endswith("nline"))
+            and _SPORTSONLINE_FALLBACK_LABEL_RE.fullmatch(label)
+        ):
+            return True
+    return False
+
+
+def _resolve_sportsonline_proxy(url: str) -> str | None:
+    # Priority requested: real URL first, then legacy aliases.
+    ordered_candidates = [url, "sportzsonline", "sportzonline", "sportsonline"]
+
+    # Route-aware pass: preserve explicit TRANSPORT_ROUTES matches in priority order.
+    for candidate in ordered_candidates:
+        if any(
+            route.get("url") and route["url"] in candidate for route in TRANSPORT_ROUTES
+        ):
+            return get_proxy_for_url(candidate, TRANSPORT_ROUTES, GLOBAL_PROXIES)
+
+    # Fallback to default behavior (global proxy or direct).
+    return get_proxy_for_url(url, TRANSPORT_ROUTES, GLOBAL_PROXIES)
+
+
 # Importazione condizionale degli estrattori
 try:
     from extractors.freeshot import FreeshotExtractor
@@ -460,12 +523,7 @@ class HLSProxy:
                             request_headers, proxies=GLOBAL_PROXIES
                         )
                     return self.extractors[key]
-                elif host in [
-                    "sportsonline",
-                    "sportzonline",
-                    "sprtsonline",
-                    "sportsnline",
-                ]:
+                elif _is_sportsonline_candidate(host):
                     key = "sportsonline"
                     if key not in self.extractors:
                         self.extractors[key] = SportsonlineExtractor(
@@ -619,19 +677,9 @@ class HLSProxy:
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
-            elif any(
-                domain in url
-                for domain in [
-                    "sportzonline",
-                    "sportsonline",
-                    "sprtsonline",
-                    "sportsnline",
-                ]
-            ):
+            elif _is_sportsonline_candidate(url):
                 key = "sportsonline"
-                proxy = get_proxy_for_url(
-                    "sportsonline", TRANSPORT_ROUTES, GLOBAL_PROXIES
-                )
+                proxy = _resolve_sportsonline_proxy(url)
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
                     self.extractors[key] = SportsonlineExtractor(
