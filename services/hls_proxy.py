@@ -329,6 +329,13 @@ try:
 except ImportError:
     logger.warning("⚠️ F16PxExtractor module not found.")
 
+try:
+    from extractors.dlstreams import DLStreamsExtractor
+
+    logger.info("✅ DLStreamsExtractor module loaded.")
+except ImportError:
+    logger.warning("⚠️ DLStreamsExtractor module not found.")
+
 
 class HLSProxy:
     """Proxy HLS per gestire stream Vavoo, DLHD, HLS generici e playlist builder con supporto AES-128"""
@@ -801,6 +808,22 @@ class HLSProxy:
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
+            elif (
+                # Rileva per dominio noto (aggiorna qui se cambia)
+                "dlhd.dad" in url
+                # Rileva per pattern URL stabile (/watch.php?id=NNN)
+                or (re.search(r'/watch\.php\?.*id=\d+', url) is not None)
+            ):
+                key = "dlstreams"
+                proxy = get_proxy_for_url(
+                    "dlhd.dad", TRANSPORT_ROUTES, GLOBAL_PROXIES
+                )
+                proxy_list = [proxy] if proxy else []
+                if key not in self.extractors:
+                    self.extractors[key] = DLStreamsExtractor(
+                        request_headers, proxies=proxy_list
+                    )
+                return self.extractors[key]
             elif "lulustream" in url:
                 key = "lulustream"
                 proxy = get_proxy_for_url(
@@ -961,6 +984,13 @@ class HLSProxy:
             for param_name, param_value in request.query.items():
                 if param_name.startswith("h_"):
                     header_name = param_name[2:]
+                    
+                    # ✅ FIX: Rimuovi eventuali header duplicati (case-insensitive)
+                    # Es. se arriva h_Referer, rimuovi sia 'Referer' che 'referer' già presenti
+                    keys_to_remove = [k for k in combined_headers.keys() if k.lower() == header_name.lower()]
+                    for k in keys_to_remove:
+                        del combined_headers[k]
+                    
                     combined_headers[header_name] = param_value
 
             # DEBUG LOGGING
@@ -968,6 +998,13 @@ class HLSProxy:
             print(f"   Headers: {dict(request.headers)}")
 
             extractor = await self.get_extractor(target_url, combined_headers)
+            
+            # ✅ FIX CRITICO: Forza l'aggiornamento degli header dell'estrattore.
+            # Siccome gli estrattori vengono memorizzati in self.extractors (cache),
+            # se non aggiorniamo request_headers, i segmenti successivi userebbero 
+            # gli header del primo manifest caricato, ignorando h_Referer/h_Origin.
+            if extractor:
+                extractor.request_headers = combined_headers
 
             print(f"   Extractor: {type(extractor).__name__}")
 
@@ -1050,7 +1087,10 @@ class HLSProxy:
 
                 # Stream URL resolved
                 # ✅ MPD/DASH handling based on MPD_MODE
-                if ".mpd" in stream_url or "dash" in stream_url.lower():
+                # ✅ FIX: Refined MPD/DASH detection. Use specific patterns to avoid false positives 
+                # (e.g. "dashinripe" in URL being mistaken for a DASH manifest).
+                is_mpd = ".mpd" in stream_url.lower() or "/dash/" in stream_url.lower()
+                if is_mpd:
                     if MPD_MODE == "ffmpeg" and self.ffmpeg_manager:
                         # FFmpeg transcoding mode
                         logger.info(
@@ -1940,41 +1980,42 @@ class HLSProxy:
                     )
 
                 # Gestione special per manifest HLS
-                # ✅ Gestisce manifest HLS standard
-                is_hls_manifest = "mpegurl" in content_type or stream_url.endswith(
-                    ".m3u8"
-                )
-
-                if is_hls_manifest:
-                    try:
-                        # Leggi come bytes prima per evitare crash su decode
-                        content_bytes = await resp.read()
-
+                # ✅ AGGIORNATO: Prima leggi il body, poi decidi se è un manifest
+                # DLStreams invia i manifest come 'text/txt' o 'text/css', quindi
+                # non possiamo fidarci del Content-Type. Usiamo il signature '#EXTM3U'.
+                
+                content_bytes = await resp.read()
+                
+                # Prova a decodificare come testo per controllare la firma
+                manifest_content = None
+                try:
+                    decoded_text = content_bytes.decode("utf-8")
+                    # Controllo firma HLS: è un manifest se inizia con #EXTM3U
+                    if decoded_text.lstrip().startswith("#EXTM3U"):
+                        manifest_content = decoded_text
+                except UnicodeDecodeError:
+                    pass  # È binario, non è un manifest
+                
+                # Fallback: controlla anche il content-type standard per m3u8
+                if manifest_content is None:
+                    is_hls_manifest_by_type = "mpegurl" in content_type or stream_url.endswith(".m3u8")
+                    if is_hls_manifest_by_type:
                         try:
-                            # Tenta la decodifica testo
                             manifest_content = content_bytes.decode("utf-8")
                         except UnicodeDecodeError:
-                            # SE FALLISCE: È binario mascherato (es. segmento .ts in un .css)
-                            logger.warning(
-                                f"⚠️ Binary detected in {stream_url} (masked as {content_type}). Serving as binary."
-                            )
+                            logger.warning(f"⚠️ Binary detected in {stream_url} (masked as {content_type}). Serving as binary.")
                             return web.Response(
                                 body=content_bytes,
                                 status=resp.status,
                                 headers={
-                                    "Content-Type": "video/MP2T",  # Forza TS se è binario camuffato
+                                    "Content-Type": "video/MP2T",
                                     "Access-Control-Allow-Origin": "*",
                                 },
                             )
-
-                    except Exception as e:
-                        logger.error(f"Error processing manifest: {e}")
-                        # Fallback to binary proxy
-                        return web.Response(
-                            body=await resp.read(),
-                            status=resp.status,
-                            headers={"Access-Control-Allow-Origin": "*"},
-                        )
+                
+                if manifest_content is not None:
+                    # È un manifest HLS — riscrivilo
+                    logger.info(f"📄 HLS manifest detected for: {stream_url} (Content-Type: {content_type})")
 
                     # ✅ CORREZIONE: Rileva lo schema e l'host corretti quando dietro un reverse proxy
                     scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -2008,10 +2049,10 @@ class HLSProxy:
                             "Cache-Control": "no-cache",
                         },
                     )
-
-                # ✅ AGGIORNATO: Gestione per manifest MPD (DASH)
-                elif "dash+xml" in content_type or stream_url.endswith(".mpd"):
-                    manifest_content = await resp.text()
+                
+                # ✅ AGGIORNATO: Gestione per manifest MPD (DASH) - separate block
+                if manifest_content is None and ("dash+xml" in content_type or stream_url.endswith(".mpd")):
+                    manifest_content = content_bytes.decode("utf-8", errors='replace')
 
                     # ✅ CORREZIONE: Rileva lo schema e l'host corretti quando dietro un reverse proxy
                     scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
@@ -2126,7 +2167,8 @@ class HLSProxy:
                         },
                     )
 
-                # Streaming normale per altri tipi di contenuto
+                # Streaming normale per altri tipi di contenuto (segmenti binari)
+                # Il body è già stato letto in content_bytes, usiamo quello.
                 response_headers = {}
 
                 for header in [
@@ -2162,16 +2204,15 @@ class HLSProxy:
                     "Range, Content-Type",
                 )
 
-                response = web.StreamResponse(
-                    status=resp.status, headers=response_headers
+                # Override content-length with actual bytes read
+                response_headers["Content-Length"] = str(len(content_bytes))
+                
+                return web.Response(
+                    body=content_bytes,
+                    status=resp.status,
+                    headers=response_headers,
                 )
 
-                await response.prepare(request)
-
-                async for chunk in resp.content.iter_chunked(8192):
-                    await response.write(chunk)
-                await response.write_eof()
-                return response
 
         except (ClientPayloadError, ConnectionResetError, OSError) as e:
             # Errori tipici di disconnessione del client
