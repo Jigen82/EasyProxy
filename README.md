@@ -5,7 +5,7 @@
 [![HLS](https://img.shields.io/badge/HLS-Streaming-red.svg)](https://developer.apple.com/streaming/)
 
 > **A universal proxy server for HLS, M3U8, and IPTV streaming** 🎬  
-> Native support for Vavoo and all streaming services  
+> Native support for Vavoo, DaddyliveHD, and many streaming services  
 > Compatible with Stremio addons when used as a MediaFlow Proxy  
 > Integrated web interface and zero configuration  
 
@@ -28,7 +28,7 @@
 
 | 🎯 **Universal Proxy** | 🔐 **Specialized Extractors** | ⚡ **Performance** |
 |------------------------|------------------------|-------------------|
-| HLS, M3U8, MPD, VIXSRC | Vavoo, Sportsonline, VixSrc | Async connections and keep-alive |
+| HLS, M3U8, MPD, VIXSRC | Vavoo, DaddyliveHD, Sportsonline, VixSrc | Async connections and keep-alive |
 | **🔓 DRM Decryption** | **🎬 MPD to HLS** | **🔑 ClearKey Support** |
 | ClearKey via FFmpeg transcoding | Automatic DASH → HLS conversion | Server-side ClearKey for VLC |
 
@@ -259,7 +259,7 @@ PORT=8080
 
 ### 🔍 Extractor API (`/extractor/video`)
 
-This endpoint **cannot be opened directly** without parameters. It is used to extract the direct stream URL from supported services (like Vavoo, etc.).
+This endpoint **cannot be opened directly** without parameters. It is used to extract the direct stream URL from supported services (like Vavoo, DaddyliveHD, etc.).
 
 **Info and Help:**
 If you open `/extractor` or `/extractor/video` without parameters, you will receive a JSON response with instructions and a list of supported hosts.
@@ -303,7 +303,7 @@ You must add `?url=` (or `?d=`) followed by the video link you want to process.
 - `api_password`: (Optional) API password if configured.
 
 **Supported Services:**
-Vavoo, Doodstream, F16px, Fastream, Filelions, Filemoon, Freeshot, LiveTV, Lulustream, Maxstream, Mixdrop, OKru, Orion, Sportsonline, Streamtape, Streamwish, Supervideo, Turbovidplay, Uqload, Vidmoly, Vidoza, VixSrc, Voe and Generic (for any M3U8 URL).
+Vavoo, DaddyliveHD, Doodstream, F16px, Fastream, Filelions, Filemoon, Freeshot, LiveTV, Lulustream, Maxstream, Mixdrop, OKru, Orion, Sportsonline, Streamtape, Streamwish, Supervideo, Turbovidplay, Uqload, Vidmoly, Vidoza, VixSrc, Voe and Generic (for any M3U8 URL).
 
 ### 📺 Proxy Endpoints
 
@@ -367,7 +367,7 @@ Comprehensive list of all endpoints available in the server.
 ### 🔍 Extractors
 | Method | Endpoint | Description |
 |:---|:---|:---|
-| `GET` | `/extractor/video` | Extracts direct links from supported sites (Vavoo, etc.). Returns JSON or redirect. |
+| `GET` | `/extractor/video` | Extracts direct links from supported sites (Vavoo, DaddyliveHD, etc.). Returns JSON or redirect. |
 
 ### 🔐 Keys & DRM
 | Method | Endpoint | Description |

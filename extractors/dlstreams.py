@@ -2,6 +2,7 @@ import logging
 import re
 import random
 import time
+import asyncio
 from urllib.parse import urlparse
 from typing import Dict, Any
 import aiohttp
@@ -11,15 +12,19 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_p
 
 logger = logging.getLogger(__name__)
 
+# Easy to change in one place if the entry domain changes again.
+DLSTREAMS_ENTRY_ORIGIN = "https://dlhd.dad"
+
 class ExtractorError(Exception):
     """Custom exception for extraction errors."""
     pass
 
 class DLStreamsExtractor:
-    """Extractor for dlstreams.top streams."""
+    """Extractor for dlhd.dad / dlstreams streams."""
 
     def __init__(self, request_headers: dict = None, proxies: list = None):
         self.request_headers = request_headers or {}
+        self.entry_origin = DLSTREAMS_ENTRY_ORIGIN
         self.base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
@@ -29,6 +34,25 @@ class DLStreamsExtractor:
         self._verified_channels: dict[str, float] = {}
         self._browser_key_cache: dict[str, tuple[bytes, float]] = {}
         self._browser_manifest_cache: dict[str, tuple[str, float]] = {}
+        self._browser_failure_cache: dict[str, float] = {}
+        self._browser_channel_locks: dict[str, asyncio.Lock] = {}
+
+    def _get_browser_lock(self, channel_key: str) -> asyncio.Lock:
+        lock = self._browser_channel_locks.get(channel_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._browser_channel_locks[channel_key] = lock
+        return lock
+
+    def _is_browser_cooldown_active(self, channel_key: str) -> bool:
+        retry_after = self._browser_failure_cache.get(channel_key, 0)
+        return retry_after > time.time()
+
+    def _mark_browser_failure(self, channel_key: str, cooldown_seconds: int = 60) -> None:
+        self._browser_failure_cache[channel_key] = time.time() + cooldown_seconds
+
+    def _clear_browser_failure(self, channel_key: str) -> None:
+        self._browser_failure_cache.pop(channel_key, None)
 
     def _get_random_proxy(self):
         return random.choice(self.proxies) if self.proxies else None
@@ -75,7 +99,7 @@ class DLStreamsExtractor:
 
         warmup_urls = [
             watch_url,
-            f"https://dlstreams.top/stream/stream-{channel_id}.php",
+            f"{self.entry_origin}/stream/stream-{channel_id}.php",
         ]
 
         for warmup_url in warmup_urls:
@@ -92,12 +116,15 @@ class DLStreamsExtractor:
         if cached_until > now:
             logger.debug("DLStreams browser verification cache hit for %s", channel_key)
             return True
+        if self._is_browser_cooldown_active(channel_key):
+            logger.info("DLStreams browser verification skipped during cooldown for %s", channel_key)
+            return False
 
         logger.info("DLStreams browser verification starting for %s", channel_key)
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(
-                    headless=True,
+                    headless=False,
                     args=[
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
@@ -127,6 +154,7 @@ class DLStreamsExtractor:
 
                 if verify_seen:
                     self._verified_channels[channel_key] = now + 15 * 60
+                    self._clear_browser_failure(channel_key)
                     logger.info("DLStreams browser verification succeeded for %s", channel_key)
                     return True
 
@@ -135,6 +163,7 @@ class DLStreamsExtractor:
         except Exception as exc:
             logger.warning("DLStreams browser verification failed for %s: %s", channel_key, exc)
 
+        self._mark_browser_failure(channel_key)
         return False
 
     async def fetch_key_via_browser(self, key_url: str, original_url: str) -> bytes | None:
@@ -151,13 +180,16 @@ class DLStreamsExtractor:
             return cached[0]
 
         channel_key = f"premium{channel_id}"
-        watch_url = f"https://dlstreams.top/watch.php?id={channel_id}"
+        watch_url = f"{self.entry_origin}/watch.php?id={channel_id}"
+        if self._is_browser_cooldown_active(channel_key):
+            logger.info("DLStreams browser key fetch skipped during cooldown for %s", channel_key)
+            return None
 
         logger.info("DLStreams browser key fetch starting for %s", key_url)
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(
-                    headless=True,
+                    headless=False,
                     args=[
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
@@ -195,6 +227,7 @@ class DLStreamsExtractor:
                     self._verified_channels[channel_key] = now + 15 * 60
                 if key_bytes:
                     self._browser_key_cache[key_url] = (key_bytes, now + 30)
+                    self._clear_browser_failure(channel_key)
                     logger.info("DLStreams browser key fetch succeeded for %s", key_url)
                     return key_bytes
         except PlaywrightTimeoutError as exc:
@@ -202,6 +235,7 @@ class DLStreamsExtractor:
         except Exception as exc:
             logger.warning("DLStreams browser key fetch failed for %s: %s", key_url, exc)
 
+        self._mark_browser_failure(channel_key)
         return None
 
     async def get_manifest_via_browser(self, original_url: str) -> str | None:
@@ -224,71 +258,93 @@ class DLStreamsExtractor:
         cached_manifest = self._browser_manifest_cache.get(channel_key)
         if cached_manifest and cached_manifest[1] > now:
             return
+        if self._is_browser_cooldown_active(channel_key):
+            logger.info("DLStreams browser session capture skipped during cooldown for %s", channel_key)
+            return
 
-        watch_url = f"https://dlstreams.top/watch.php?id={channel_id}"
-        logger.info("DLStreams browser session capture starting for %s", channel_key)
-        try:
-            async with async_playwright() as playwright:
-                browser = await playwright.chromium.launch(
-                    headless=False,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--autoplay-policy=no-user-gesture-required",
-                    ],
-                )
-                context = await browser.new_context(
-                    user_agent=self.base_headers["User-Agent"],
-                    viewport={"width": 1366, "height": 768},
-                )
-                page = await context.new_page()
-                manifest_text: str | None = None
-                key_ttl = now + 30
-                manifest_ttl = now + 30
+        lock = self._get_browser_lock(channel_key)
+        async with lock:
+            now = time.time()
+            cached_manifest = self._browser_manifest_cache.get(channel_key)
+            if cached_manifest and cached_manifest[1] > now:
+                return
+            if self._is_browser_cooldown_active(channel_key):
+                logger.info("DLStreams browser session capture skipped during cooldown for %s", channel_key)
+                return
 
-                async def on_response(response):
-                    nonlocal manifest_text
-                    try:
-                        if (
-                            response.url.endswith(f"/proxy/wind/{channel_key}/mono.css")
-                            or f"/proxy/top1/cdn/{channel_key}/mono.css" in response.url
-                            or f"/proxy/" in response.url and f"/{channel_key}/mono.css" in response.url
-                        ) and response.status == 200:
-                            body = await response.body()
-                            decoded = body.decode("utf-8", errors="ignore")
-                            if decoded.lstrip().startswith("#EXTM3U"):
-                                manifest_text = decoded
-                                self._browser_manifest_cache[channel_key] = (
-                                    manifest_text,
-                                    manifest_ttl,
-                                )
-                        if "sec.ai-hls.site/key/" in response.url and response.status == 200:
-                            body = await response.body()
-                            self._browser_key_cache[response.url] = (body, key_ttl)
-                    except Exception as exc:
-                        logger.debug("DLStreams browser capture hook failed for %s: %s", response.url, exc)
+            watch_url = f"{self.entry_origin}/watch.php?id={channel_id}"
+            logger.info("DLStreams browser session capture starting for %s", channel_key)
+            try:
+                async with async_playwright() as playwright:
+                    browser = await playwright.chromium.launch(
+                        headless=False,
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--no-sandbox",
+                            "--autoplay-policy=no-user-gesture-required",
+                        ],
+                    )
+                    context = await browser.new_context(
+                        user_agent=self.base_headers["User-Agent"],
+                        viewport={"width": 1366, "height": 768},
+                    )
+                    page = await context.new_page()
+                    manifest_text: str | None = None
+                    key_ttl = now + 30
+                    manifest_ttl = now + 30
 
-                context.on("response", on_response)
-                await page.goto(watch_url, wait_until="domcontentloaded", timeout=30000)
+                    async def on_response(response):
+                        nonlocal manifest_text
+                        try:
+                            if (
+                                response.url.endswith(f"/proxy/wind/{channel_key}/mono.css")
+                                or f"/proxy/top1/cdn/{channel_key}/mono.css" in response.url
+                                or f"/proxy/" in response.url and f"/{channel_key}/mono.css" in response.url
+                            ) and response.status == 200:
+                                body = await response.body()
+                                decoded = body.decode("utf-8", errors="ignore")
+                                if decoded.lstrip().startswith("#EXTM3U"):
+                                    manifest_text = decoded
+                                    self._browser_manifest_cache[channel_key] = (
+                                        manifest_text,
+                                        manifest_ttl,
+                                    )
+                            if "sec.ai-hls.site/key/" in response.url and response.status == 200:
+                                body = await response.body()
+                                self._browser_key_cache[response.url] = (body, key_ttl)
+                        except Exception as exc:
+                            logger.debug("DLStreams browser capture hook failed for %s: %s", response.url, exc)
 
-                deadline = time.time() + 20
-                while time.time() < deadline:
+                    context.on("response", on_response)
+                    await page.goto(watch_url, wait_until="domcontentloaded", timeout=30000)
+
+                    deadline = time.time() + 20
+                    while time.time() < deadline:
+                        cached_manifest = self._browser_manifest_cache.get(channel_key)
+                        has_manifest = cached_manifest and cached_manifest[1] > time.time()
+                        has_key = any(
+                            key.startswith("https://sec.ai-hls.site/key/")
+                            and expiry > time.time()
+                            for key, (_, expiry) in self._browser_key_cache.items()
+                        )
+                        if has_manifest and has_key:
+                            break
+                        await page.wait_for_timeout(250)
+
+                    await context.close()
+                    await browser.close()
+
                     cached_manifest = self._browser_manifest_cache.get(channel_key)
                     has_manifest = cached_manifest and cached_manifest[1] > time.time()
-                    has_key = any(
-                        key.startswith("https://sec.ai-hls.site/key/")
-                        and expiry > time.time()
-                        for key, (_, expiry) in self._browser_key_cache.items()
-                    )
-                    if has_manifest and has_key:
-                        break
-                    await page.wait_for_timeout(250)
+                    if has_manifest:
+                        self._clear_browser_failure(channel_key)
+                    else:
+                        self._mark_browser_failure(channel_key)
 
-                await context.close()
-                await browser.close()
-                logger.info("DLStreams browser session capture completed for %s", channel_key)
-        except Exception as exc:
-            logger.warning("DLStreams browser session capture failed for %s: %s", channel_key, exc)
+                    logger.info("DLStreams browser session capture completed for %s", channel_key)
+            except Exception as exc:
+                self._mark_browser_failure(channel_key)
+                logger.warning("DLStreams browser session capture failed for %s: %s", channel_key, exc)
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -307,14 +363,14 @@ class DLStreamsExtractor:
         return self.session
 
     async def extract(self, url: str, **kwargs) -> Dict[str, Any]:
-        """Extracts the M3U8 URL and headers bypassing dlstreams.top."""
+        """Extracts the M3U8 URL and headers bypassing the public watch page."""
         try:
             # Extract ID from URL or use as is if numeric
             channel_id = self._extract_channel_id(url)
 
             channel_key = f"premium{channel_id}"
             session = await self._get_session()
-            watch_url = f"https://dlstreams.top/watch.php?id={channel_id}"
+            watch_url = f"{self.entry_origin}/watch.php?id={channel_id}"
 
             await self._prime_dlstreams_session(session, watch_url, channel_id)
             await self._browser_prime_verification(watch_url, channel_key)
@@ -327,7 +383,7 @@ class DLStreamsExtractor:
 
             # 1. SERVER LOOKUP: Fetch dynamic server_key
             lookup_url = f"https://sec.ai-hls.site/server_lookup?channel_id={channel_key}"
-            logger.info(f"Looking up server key for: {channel_key} (Bypassing dlstreams.top)")
+            logger.info(f"Looking up server key for: {channel_key} (Bypassing {self.entry_origin})")
             
             lookup_headers = {
                 "Referer": f"{iframe_origin}/",
