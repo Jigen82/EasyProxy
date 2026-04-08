@@ -81,7 +81,8 @@ if MPD_MODE == "legacy":
     SupervideoExtractor,
     UqloadExtractor,
     DroploadExtractor,
-) = None, None, None, None, None, None
+    VixCloudExtractor,
+) = None, None, None, None, None, None, None
 (
     VidmolyExtractor,
     VidozaExtractor,
@@ -264,6 +265,13 @@ try:
     logger.info("DroploadExtractor module loaded.")
 except ImportError:
     logger.warning("DroploadExtractor module not found.")
+
+try:
+    from extractors.vixcloud import VixCloudExtractor
+
+    logger.info("VixCloudExtractor module loaded.")
+except ImportError:
+    logger.warning("VixCloudExtractor module not found.")
 
 try:
     from extractors.vidmoly import VidmolyExtractor
@@ -521,6 +529,12 @@ class HLSProxy:
                             request_headers, proxies=GLOBAL_PROXIES
                         )
                     return self.extractors[key]
+                elif host == "vixcloud":
+                    if key not in self.extractors:
+                        self.extractors[key] = VixCloudExtractor(
+                            request_headers, proxies=GLOBAL_PROXIES
+                        )
+                    return self.extractors[key]
                 elif _is_sportsonline_candidate(host):
                     key = "sportsonline"
                     if key not in self.extractors:
@@ -678,6 +692,17 @@ class HLSProxy:
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
                     self.extractors[key] = VixSrcExtractor(
+                        request_headers, proxies=proxy_list
+                    )
+                return self.extractors[key]
+            elif "vixcloud.co/" in url.lower() and any(
+                x in url.lower() for x in ["/embed/", "/playlist/"]
+            ):
+                key = "vixcloud"
+                proxy = get_proxy_for_url("vixcloud.co", TRANSPORT_ROUTES, GLOBAL_PROXIES)
+                proxy_list = [proxy] if proxy else []
+                if key not in self.extractors:
+                    self.extractors[key] = VixCloudExtractor(
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
@@ -1459,6 +1484,7 @@ class HLSProxy:
                     "available_hosts": [
                         "vavoo",
                         "vixsrc",
+                        "vixcloud",
                         "sportsonline",
                         "mixdrop",
                         "voe",
