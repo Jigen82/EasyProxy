@@ -7,6 +7,7 @@ from typing import Dict, Any
 import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
+from yarl import URL
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,9 @@ class DLStreamsExtractor:
     def __init__(self, request_headers: dict = None, proxies: list = None):
         self.request_headers = request_headers or {}
         self.entry_origin = DLSTREAMS_ENTRY_ORIGIN
+        # Runtime-discovered stream origin (learned from browser network responses).
+        # We intentionally avoid hardcoding CDN domains because they rotate frequently.
+        self.stream_origin = self.entry_origin
         self.base_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         }
@@ -37,6 +41,7 @@ class DLStreamsExtractor:
         self._playwright = None
         self._browser = None
         self._browser_launch_lock = asyncio.Lock()
+        self._captured_cookies: list[dict] = []
 
     def _get_browser_lock(self, channel_key: str) -> asyncio.Lock:
         lock = self._browser_channel_locks.get(channel_key)
@@ -69,10 +74,14 @@ class DLStreamsExtractor:
         channel_key = f"premium{channel_id}"
         self._browser_manifest_cache.pop(channel_key, None)
         self._last_working_player.pop(channel_id, None)
-        key_prefix = "https://sec.ai-hls.site/key/"
-        keys_to_remove = [k for k in self._browser_key_cache if k.startswith(key_prefix)]
+        keys_to_remove = [k for k in self._browser_key_cache if "/key/" in k]
         for key in keys_to_remove:
             self._browser_key_cache.pop(key, None)
+
+    @staticmethod
+    def _origin_of(url: str) -> str:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}"
 
     async def _get_browser(self):
         if self._browser:
@@ -284,9 +293,11 @@ class DLStreamsExtractor:
                                 if decoded.lstrip().startswith("#EXTM3U"):
                                     manifest_text = decoded
                                     self._browser_manifest_cache[channel_key] = manifest_text
-                            if "sec.ai-hls.site/key/" in response.url and response.status == 200:
+                                    self.stream_origin = self._origin_of(response.url)
+                            if "/key/" in response.url and response.status == 200:
                                 body = await response.body()
                                 self._browser_key_cache[response.url] = body
+                                self.stream_origin = self._origin_of(response.url)
                         except Exception as exc:
                             logger.debug("DLStreams browser capture hook failed for %s: %s", response.url, exc)
 
@@ -297,7 +308,7 @@ class DLStreamsExtractor:
                     while time.time() < deadline:
                         cached_manifest = self._browser_manifest_cache.get(channel_key)
                         has_manifest = bool(cached_manifest)
-                        has_key = any(key.startswith("https://sec.ai-hls.site/key/") for key in self._browser_key_cache)
+                        has_key = any("/key/" in key for key in self._browser_key_cache)
                         if has_manifest and has_key:
                             break
                         await page.wait_for_timeout(250)
@@ -310,6 +321,13 @@ class DLStreamsExtractor:
                     else:
                         self._clear_channel_cache(channel_id)
                         self._mark_browser_failure(channel_key)
+
+                    self._captured_cookies = await context.cookies()
+                    # Sync cookies to session
+                    if self.session:
+                        yarl_url = URL(resolved_player_url)
+                        for cookie in self._captured_cookies:
+                            self.session.cookie_jar.update_cookies({cookie['name']: cookie['value']}, response_url=yarl_url)
 
                     logger.info("DLStreams browser session capture completed for %s", channel_key)
                 finally:
@@ -354,7 +372,8 @@ class DLStreamsExtractor:
             iframe_origin = self.entry_origin.rstrip("/")
 
             # 1. SERVER LOOKUP: Fetch dynamic server_key
-            lookup_url = f"https://sec.ai-hls.site/server_lookup?channel_id={channel_key}"
+            lookup_base = self.stream_origin.rstrip("/")
+            lookup_url = f"{lookup_base}/server_lookup?channel_id={channel_key}"
             logger.info(f"Looking up server key for: {channel_key} (Bypassing {self.entry_origin})")
             
             server_key = "wind"
@@ -374,7 +393,7 @@ class DLStreamsExtractor:
                 logger.debug("DLStreams lookup error for %s: %s", iframe_origin, e)
 
             # 2. Construct M3U8 URL
-            m3u8_url = f"https://sec.ai-hls.site/proxy/{server_key}/{channel_key}/mono.css"
+            m3u8_url = f"{lookup_base}/proxy/{server_key}/{channel_key}/mono.css"
 
             # 3. Setup headers for playback/proxying
             playback_headers = {
@@ -383,8 +402,31 @@ class DLStreamsExtractor:
                 "User-Agent": self.base_headers["User-Agent"],
                 "Accept": "*/*",
                 "X-Direct-Connection": "1",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
             }
+            
+            # Combine cookies from session and captured playwright cookies
             cookie_header = self._get_cookie_header_for_url(m3u8_url)
+            
+            # Also add cookies captured directly from the browser context
+            if self._captured_cookies:
+                relevant_cookies = []
+                stream_domain = urlparse(m3u8_url).netloc
+                entry_domain = urlparse(self.entry_origin).netloc
+                
+                for c in self._captured_cookies:
+                    if stream_domain in c['domain'] or entry_domain in c['domain'] or c['domain'] in stream_domain:
+                        relevant_cookies.append(f"{c['name']}={c['value']}")
+                
+                if relevant_cookies:
+                    browser_cookie_str = "; ".join(relevant_cookies)
+                    if cookie_header:
+                        cookie_header = f"{cookie_header}; {browser_cookie_str}"
+                    else:
+                        cookie_header = browser_cookie_str
+
             if cookie_header:
                 playback_headers["Cookie"] = cookie_header
 
