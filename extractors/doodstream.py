@@ -55,68 +55,113 @@ class DoodStreamExtractor:
     async def _fetch_player_data_via_browser(
         self, url: str
     ) -> tuple[str | None, str | None, str | None, str, str]:
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--autoplay-policy=no-user-gesture-required",
-                    "--disable-dev-shm-usage",
-                ],
-            )
-            context = await browser.new_context(
-                user_agent=self.base_headers["user-agent"],
-                locale="en-US",
-                viewport={"width": 1366, "height": 768},
-            )
-            await context.add_init_script(
-                """
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4] });
-                window.chrome = window.chrome || { runtime: {} };
-                """
-            )
-            page = await context.new_page()
-            pass_path: str | None = None
-            token: str | None = None
-            pass_body: str | None = None
+        last_result = (None, None, None, url, "")
+        browser_proxy = self._get_random_proxy()
 
-            async def handle_response(response):
-                nonlocal pass_path, token, pass_body
-                response_url = response.url
-                if "/pass_md5/" not in response_url:
-                    return
-                if not pass_path:
-                    parsed = urlparse(response_url)
-                    pass_path = parsed.path
-                if not token:
-                    token_match = re.search(r"[?&]token=([^&]+)", response_url)
-                    if token_match:
-                        token = token_match.group(1)
-                if not token and pass_path:
-                    path_parts = [part for part in pass_path.split("/") if part]
-                    if len(path_parts) >= 2 and path_parts[0] == "pass_md5":
-                        token = path_parts[-1]
-                if pass_body is None:
+        for attempt in range(1, 4):
+            async with async_playwright() as playwright:
+                launch_options = {
+                    "headless": True,
+                    "args": [
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--autoplay-policy=no-user-gesture-required",
+                        "--disable-dev-shm-usage",
+                    ],
+                }
+                if browser_proxy:
+                    launch_options["proxy"] = {"server": browser_proxy}
+                    if attempt == 1:
+                        logger.info("DoodStream browser fallback using proxy: %s", browser_proxy)
+
+                browser = await playwright.chromium.launch(**launch_options)
+                context = await browser.new_context(
+                    user_agent=self.base_headers["user-agent"],
+                    locale="en-US",
+                    viewport={"width": 1366, "height": 768},
+                )
+                await context.add_init_script(
+                    """
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4] });
+                    window.chrome = window.chrome || { runtime: {} };
+                    """
+                )
+
+                page = await context.new_page()
+                pass_path: str | None = None
+                token: str | None = None
+                pass_body: str | None = None
+
+                async def handle_response(response):
+                    nonlocal pass_path, token, pass_body
+                    response_url = response.url
+                    if "/pass_md5/" not in response_url:
+                        return
+                    if not pass_path:
+                        parsed = urlparse(response_url)
+                        pass_path = parsed.path
+                    if not token:
+                        token_match = re.search(r"[?&]token=([^&]+)", response_url)
+                        if token_match:
+                            token = token_match.group(1)
+                    if not token and pass_path:
+                        path_parts = [part for part in pass_path.split("/") if part]
+                        if len(path_parts) >= 2 and path_parts[0] == "pass_md5":
+                            token = path_parts[-1]
+                    if pass_body is None:
+                        try:
+                            pass_body = await response.text()
+                        except Exception:
+                            pass
+
+                page.on("response", handle_response)
+                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+
+                click_selectors = [
+                    ".captcha_l",
+                    "#video_player",
+                    ".videoplayer",
+                    "button",
+                ]
+                for selector in click_selectors:
+                    if pass_path and token:
+                        break
                     try:
-                        pass_body = await response.text()
+                        locator = page.locator(selector).first
+                        if await locator.count():
+                            await locator.click(timeout=3000)
+                            await page.wait_for_timeout(1500)
                     except Exception:
-                        pass
+                        continue
 
-            page.on("response", handle_response)
-            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(12000)
-            html = await page.content()
-            final_url = page.url
-            if not pass_path or not token:
-                html_pass_path, html_token = self._extract_pass_and_token(html)
-                pass_path = pass_path or html_pass_path
-                token = token or html_token
-            await context.close()
-            await browser.close()
-            return pass_path, token, pass_body, final_url, html
+                for _ in range(8):
+                    if pass_path and token:
+                        break
+                    await page.wait_for_timeout(1500)
+
+                html = await page.content()
+                final_url = page.url
+                if not pass_path or not token:
+                    html_pass_path, html_token = self._extract_pass_and_token(html)
+                    pass_path = pass_path or html_pass_path
+                    token = token or html_token
+
+                last_result = (pass_path, token, pass_body, final_url, html)
+
+                await context.close()
+                await browser.close()
+
+                if pass_path and token:
+                    if attempt > 1:
+                        logger.info("DoodStream browser fallback succeeded on retry %s", attempt)
+                    return last_result
+
+                if attempt < 3:
+                    logger.info("DoodStream browser fallback retry %s/3", attempt + 1)
+
+        return last_result
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -139,19 +184,21 @@ class DoodStreamExtractor:
 
         pass_path, token = self._extract_pass_and_token(text)
         pass_body = None
-        if not pass_path or not token:
-            logger.info("DoodStream: direct HTML parse failed, trying browser fallback")
-            pass_path, token, pass_body, response_url, text = await self._fetch_player_data_via_browser(url)
 
         if not pass_path or not token:
-            snippet = (text or "")[:500].replace("\n", " ").replace("\r", " ")
+            logger.info("DoodStream: direct HTML parse failed, trying browser fallback")
+            try:
+                pass_path, token, pass_body, response_url, text = await self._fetch_player_data_via_browser(url)
+            except Exception as exc:
+                logger.warning("DoodStream: browser fallback failed: %s", exc)
+
+        if not pass_path or not token:
             logger.warning(
-                "DoodStream debug: response_url=%s pass_path=%s token_found=%s pass_body_found=%s html_snippet=%s",
+                "DoodStream extraction failed after browser fallback: response_url=%s pass_path=%s token_found=%s pass_body_found=%s",
                 response_url,
                 bool(pass_path),
                 bool(token),
                 bool(pass_body),
-                snippet,
             )
             raise ExtractorError("Failed to extract URL pattern")
 
