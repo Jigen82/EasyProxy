@@ -93,10 +93,15 @@ class DoodStreamExtractor:
                 pass_path: str | None = None
                 token: str | None = None
                 pass_body: str | None = None
+                captured_media_url: str | None = None
+                candidate_urls: set[str] = set()
 
                 async def handle_response(response):
-                    nonlocal pass_path, token, pass_body
+                    nonlocal pass_path, token, pass_body, captured_media_url
                     response_url = response.url
+                    if any(marker in response_url for marker in ("cloudatacdn.com", "doodcdn", ".mp4")):
+                        captured_media_url = captured_media_url or response_url
+                        candidate_urls.add(response_url)
                     if "/pass_md5/" not in response_url:
                         return
                     if not pass_path:
@@ -116,6 +121,12 @@ class DoodStreamExtractor:
                         except Exception:
                             pass
 
+                async def handle_request(request):
+                    request_url = request.url
+                    if any(marker in request_url for marker in ("pass_md5", "cloudatacdn.com", "doodcdn", ".mp4")):
+                        candidate_urls.add(request_url)
+
+                page.on("request", handle_request)
                 page.on("response", handle_response)
                 await page.goto(url, wait_until="domcontentloaded", timeout=45000)
 
@@ -125,16 +136,27 @@ class DoodStreamExtractor:
                     ".videoplayer",
                     "button",
                 ]
-                for selector in click_selectors:
-                    if pass_path and token:
-                        break
-                    try:
-                        locator = page.locator(selector).first
-                        if await locator.count():
-                            await locator.click(timeout=3000)
-                            await page.wait_for_timeout(1500)
-                    except Exception:
+                async def try_clicks_in_frame(frame):
+                    for selector in click_selectors:
+                        if pass_path and token:
+                            break
+                        try:
+                            locator = frame.locator(selector).first
+                            if await locator.count():
+                                await locator.click(timeout=3000)
+                                await page.wait_for_timeout(1500)
+                        except Exception:
+                            continue
+
+                await try_clicks_in_frame(page)
+
+                for frame in page.frames:
+                    if frame == page.main_frame:
                         continue
+                    frame_url = frame.url or ""
+                    if frame_url:
+                        logger.info("DoodStream browser fallback inspecting frame: %s", frame_url)
+                    await try_clicks_in_frame(frame)
 
                 for _ in range(8):
                     if pass_path and token:
@@ -147,6 +169,19 @@ class DoodStreamExtractor:
                     html_pass_path, html_token = self._extract_pass_and_token(html)
                     pass_path = pass_path or html_pass_path
                     token = token or html_token
+
+                if not pass_path and captured_media_url:
+                    media_match = re.search(
+                        r"(?P<base>https?://[^\"'\s]+?)(?:/|%2F)(?P<tail>[^/?\"'\s]+)\?token=(?P<token>[^&]+)&expiry=(?P<expiry>\d+)",
+                        captured_media_url,
+                    )
+                    if media_match:
+                        logger.info(
+                            "DoodStream browser fallback captured direct media URL candidate: %s",
+                            captured_media_url,
+                        )
+                        pass_body = media_match.group("base").rstrip("/") + "/"
+                        token = token or media_match.group("token")
 
                 last_result = (pass_path, token, pass_body, final_url, html)
 
