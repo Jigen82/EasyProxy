@@ -28,7 +28,6 @@ class DoodStreamExtractor:
         self.session = None
         self.mediaflow_endpoint = "proxy_stream_endpoint"
         self.proxies = proxies or []
-        self.base_url = "https://d000d.com"
 
     def _get_random_proxy(self):
         return random.choice(self.proxies) if self.proxies else None
@@ -136,6 +135,7 @@ class DoodStreamExtractor:
                     ".videoplayer",
                     "button",
                 ]
+
                 async def try_clicks_in_frame(frame):
                     for selector in click_selectors:
                         if pass_path and token:
@@ -238,9 +238,9 @@ class DoodStreamExtractor:
             raise ExtractorError("Failed to extract URL pattern")
 
         parsed_response_url = urlparse(response_url)
-        self.base_url = f"{parsed_response_url.scheme}://{parsed_response_url.netloc}"
-        pass_url = f"{self.base_url}{pass_path}"
-        referer = f"{self.base_url}/"
+        base_url = f"{parsed_response_url.scheme}://{parsed_response_url.netloc}"
+        pass_url = f"{base_url}{pass_path}"
+        referer = f"{base_url}/"
         headers = {"range": "bytes=0-", "referer": referer}
 
         response_text = pass_body
@@ -254,10 +254,12 @@ class DoodStreamExtractor:
             f"{token}&expiry={timestamp_ms}"
         )
 
-        self.base_headers["referer"] = referer
         return {
             "destination_url": final_url,
-            "request_headers": self.base_headers,
+            "request_headers": {
+                **self.base_headers,
+                "referer": referer,
+            },
             "mediaflow_endpoint": self.mediaflow_endpoint,
         }
 
