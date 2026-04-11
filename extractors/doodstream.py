@@ -16,7 +16,11 @@ class ExtractorError(Exception):
 class DoodStreamExtractor:
     """DoodStream URL extractor."""
 
-    def __init__(self, request_headers: dict, proxies: list = None):
+    def __init__(
+        self,
+        request_headers: dict,
+        proxies: list = None,
+    ):
         self.request_headers = request_headers
         self.base_headers = {
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -128,7 +132,7 @@ class DoodStreamExtractor:
     async def extract(self, url: str, **kwargs) -> dict:
         """Extract DoodStream URL."""
         session = await self._get_session()
-        
+
         async with session.get(url) as response:
             text = await response.text()
             response_url = str(response.url)
