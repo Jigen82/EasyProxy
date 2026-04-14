@@ -81,8 +81,7 @@ if MPD_MODE == "legacy":
     SupervideoExtractor,
     UqloadExtractor,
     DroploadExtractor,
-    VixCloudExtractor,
-) = None, None, None, None, None, None, None
+) = None, None, None, None, None, None
 (
     VidmolyExtractor,
     VidozaExtractor,
@@ -265,13 +264,6 @@ try:
     logger.info("DroploadExtractor module loaded.")
 except ImportError:
     logger.warning("DroploadExtractor module not found.")
-
-try:
-    from extractors.vixcloud import VixCloudExtractor
-
-    logger.info("VixCloudExtractor module loaded.")
-except ImportError:
-    logger.warning("VixCloudExtractor module not found.")
 
 try:
     from extractors.vidmoly import VidmolyExtractor
@@ -555,7 +547,7 @@ class HLSProxy:
                     return self.extractors[key]
                 elif host == "vixcloud":
                     if key not in self.extractors:
-                        self.extractors[key] = VixCloudExtractor(
+                        self.extractors[key] = VixSrcExtractor(
                             request_headers, proxies=GLOBAL_PROXIES
                         )
                     return self.extractors[key]
@@ -727,7 +719,7 @@ class HLSProxy:
                 proxy = get_proxy_for_url("vixcloud.co", TRANSPORT_ROUTES, GLOBAL_PROXIES)
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
-                    self.extractors[key] = VixCloudExtractor(
+                    self.extractors[key] = VixSrcExtractor(
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
@@ -1448,6 +1440,10 @@ class HLSProxy:
         except Exception as e:
             # ✅ MIGLIORATO: Distingui tra errori temporanei (sito offline) ed errori critici
             error_msg = str(e).lower()
+            is_expired_embed = (
+                "expired vixsrc embed url" in error_msg
+                or ("vixsrc" in error_msg and "expired" in error_msg and "embed" in error_msg)
+            )
             is_temporary_error = any(
                 x in error_msg
                 for x in [
@@ -1464,6 +1460,12 @@ class HLSProxy:
             extractor_name = "unknown"
             if VavooExtractor and isinstance(extractor, VavooExtractor):
                 extractor_name = "VavooExtractor"
+            elif extractor is not None:
+                extractor_name = type(extractor).__name__
+
+            if is_expired_embed:
+                logger.info("Expired VixSrc embed URL rejected: %s", str(e))
+                return web.Response(text=str(e), status=410)
 
             # Se è un errore temporaneo (sito offline), logga solo un WARNING senza traceback
             if is_temporary_error:
@@ -1510,7 +1512,7 @@ class HLSProxy:
                     "available_hosts": [
                         "vavoo",
                         "vixsrc",
-                        "vixcloud",
+                        "vixcloud (alias of vixsrc)",
                         "sportsonline",
                         "mixdrop",
                         "voe",
