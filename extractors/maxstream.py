@@ -161,11 +161,85 @@ class MaxstreamExtractor:
         
         raise ExtractorError(f"Connection failed for {url} after trying all paths. Last error: {last_error}")
 
+    async def _get_uprot_playwright(self, link: str) -> str:
+        """Use Playwright (real browser) to bypass Cloudflare on uprot.net."""
+        from playwright.async_api import async_playwright
+        
+        logger.info(f"Playwright: loading uprot page {link}")
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+            )
+            try:
+                context = await browser.new_context(
+                    user_agent=self.base_headers["user-agent"],
+                    viewport={"width": 1366, "height": 768},
+                )
+                page = await context.new_page()
+                
+                # Navigate to uprot page
+                resp = await page.goto(link, wait_until="domcontentloaded", timeout=30000)
+                
+                # If Cloudflare challenge, wait for it to resolve
+                if resp and resp.status == 403:
+                    logger.info("Playwright: Cloudflare challenge detected, waiting...")
+                    try:
+                        await page.wait_for_url(lambda url: "uprot.net" in url, timeout=15000)
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass  # Continue anyway, page might have loaded
+                
+                # Wait for the redirect link to appear
+                try:
+                    await page.wait_for_selector("a[href*='maxstream'], a[href*='stayonline'], a", timeout=20000)
+                except Exception:
+                    logger.debug(f"Playwright: selector wait timed out, checking page anyway")
+                
+                # Extract href from first <a> tag
+                href = await page.evaluate("""() => {
+                    let a = document.querySelector('a[href*="maxstream"]') 
+                         || document.querySelector('a[href*="stayonline"]')
+                         || document.querySelector('a');
+                    return a ? a.href : null;
+                }""")
+                
+                if href:
+                    logger.info(f"Playwright extracted uprot redirect: {href}")
+                    return href
+                
+                # Check if page redirected to maxstream directly
+                current_url = page.url
+                if "maxstream" in current_url or "stayonline" in current_url:
+                    logger.info(f"Playwright followed redirect to: {current_url}")
+                    return current_url
+                
+                # Last try: get page content and parse
+                content = await page.content()
+                logger.debug(f"Playwright page content (first 500): {content[:500]}")
+                soup = BeautifulSoup(content, "lxml")
+                a_tag = soup.find("a")
+                if a_tag and a_tag.get("href"):
+                    return a_tag["href"]
+                
+                raise ExtractorError(f"Playwright could not find redirect on uprot page")
+            finally:
+                await browser.close()
+
     async def get_uprot(self, link: str):
         """Extract MaxStream URL from uprot redirect."""
         if "msf" in link:
             link = link.replace("msf", "mse")
         
+        # Try Playwright first (bypasses Cloudflare TLS fingerprinting)
+        try:
+            return await self._get_uprot_playwright(link)
+        except ImportError:
+            logger.warning("Playwright not installed, skipping browser-based uprot bypass")
+        except Exception as e:
+            logger.warning(f"Playwright uprot failed ({e}), falling back to aiohttp")
+        
+        # Fallback: aiohttp with DoH
         text = await self._smart_request(link)
         
         soup = BeautifulSoup(text, "lxml")
