@@ -2,7 +2,8 @@ import logging
 import random
 import re
 import socket
-from urllib.parse import urlparse
+import io
+from urllib.parse import urlparse, quote_plus
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp.resolver import DefaultResolver
 from aiohttp_socks import ProxyConnector
@@ -99,7 +100,7 @@ class MaxstreamExtractor:
             logger.debug(f"DoH resolution failed for {domain}: {e}")
         return []
 
-    async def _smart_request(self, url: str, method="GET", **kwargs):
+    async def _smart_request(self, url: str, method="GET", is_binary=False, **kwargs):
         """Request with automatic retry using different proxies and resolver fallback on connection failure."""
         last_error = None
         parsed_url = urlparse(url)
@@ -143,6 +144,10 @@ class MaxstreamExtractor:
             try:
                 async with session.request(method, url, **kwargs) as response:
                     if response.status < 400:
+                        if is_binary:
+                            content = await response.read()
+                            if proxy: await session.close()
+                            return content
                         text = await response.text()
                         if proxy: await session.close()
                         return text
@@ -161,119 +166,175 @@ class MaxstreamExtractor:
         
         raise ExtractorError(f"Connection failed for {url} after trying all paths. Last error: {last_error}")
 
-    async def _get_uprot_playwright(self, link: str) -> str:
-        """Use Playwright (real browser) to bypass Cloudflare on uprot.net."""
-        from playwright.async_api import async_playwright
+    async def _solve_uprot_captcha(self, text: str, original_url: str) -> str:
+        """Find, download and solve captcha on uprot page."""
+        try:
+            import ddddocr
+        except ImportError:
+            logger.error("ddddocr not installed. Cannot solve captcha.")
+            return None
+            
+        soup = BeautifulSoup(text, "lxml")
+        img_tag = soup.find("img", src=re.compile(r'/captcha|/image/'))
+        form = soup.find("form")
         
-        logger.info(f"Playwright: loading uprot page {link}")
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
-            )
-            try:
-                context = await browser.new_context(
-                    user_agent=self.base_headers["user-agent"],
-                    viewport={"width": 1366, "height": 768},
-                )
-                page = await context.new_page()
+        if not img_tag or not form:
+            return None
+            
+        captcha_url = img_tag["src"]
+        if captcha_url.startswith("/"):
+            parsed = urlparse(original_url)
+            captcha_url = f"{parsed.scheme}://{parsed.netloc}{captcha_url}"
+            
+        logger.info(f"Downloading captcha from: {captcha_url}")
+        img_data = await self._smart_request(captcha_url, is_binary=True)
+        
+        if not img_data:
+            return None
+            
+        # Initialize ddddocr (lazy init for performance)
+        if not hasattr(self, '_ocr_engine'):
+            self._ocr_engine = ddddocr.DdddOcr(show_ad=False)
+            
+        # Solve
+        res = self._ocr_engine.classification(img_data)
+        logger.info(f"Captcha solved: {res}")
+        
+        # Submit form
+        form_action = form.get("action", "")
+        if not form_action or form_action == "#":
+            form_action = original_url
+        elif form_action.startswith("/"):
+            parsed = urlparse(original_url)
+            form_action = f"{parsed.scheme}://{parsed.netloc}{form_action}"
+            
+        # Prepare data (find the captcha input name)
+        captcha_input = soup.find("input", {"name": re.compile(r'captcha|code|val', re.I)})
+        if not captcha_input:
+            # Fallback to common names
+            field_name = "captcha"
+        else:
+            field_name = captcha_input["name"]
+            
+        post_data = {field_name: res}
+        # Add other hidden fields
+        for hidden in form.find_all("input", type="hidden"):
+            if hidden.get("name"):
+                post_data[hidden["name"]] = hidden.get("value", "")
+        
+        logger.info(f"Submitting captcha to: {form_action}")
+        headers = {**self.base_headers, "referer": original_url}
+        solved_text = await self._smart_request(form_action, method="POST", data=post_data, headers=headers)
+        
+        # Try to parse the new page
+        try:
+            return self._parse_uprot_html(solved_text)
+        except:
+            return None
+
+    def _parse_uprot_html(self, text: str) -> str:
+        """Parse uprot HTML to extract redirect link."""
+        # 1. Look for direct links in text (including escaped slashes)
+        match = re.search(r'https?://(?:www\.)?(?:stayonline\.pro|maxstream\.video)[^"\'\s<>\\ ]+', text.replace("\\/", "/"))
+        if match:
+            return match.group(0)
+            
+        # 2. Look for JavaScript-based redirects
+        js_match = re.search(r'window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\']', text)
+        if js_match:
+            return js_match.group(1)
+            
+        # 3. Look for Meta refresh
+        meta_match = re.search(r'content=["\']0;\s*url=([^"\']+)["\']', text, re.I)
+        if meta_match:
+            return meta_match.group(1)
+            
+        # 4. Use BeautifulSoup for interactive elements
+        soup = BeautifulSoup(text, "lxml")
+        
+        # Look for Bulma-style buttons or links with "Continue" text
+        for btn in soup.find_all(["a", "button"]):
+            text_content = btn.get_text().strip().lower()
+            if "continue" in text_content or "continua" in text_content or "vai al" in text_content:
+                href = btn.get("href")
+                if not href and btn.parent.name == "a":
+                    href = btn.parent.get("href")
                 
-                # Navigate to uprot page
-                resp = await page.goto(link, wait_until="domcontentloaded", timeout=30000)
-                
-                # If Cloudflare challenge, wait for it to resolve
-                if resp and resp.status == 403:
-                    logger.info("Playwright: Cloudflare challenge detected, waiting...")
-                    try:
-                        await page.wait_for_url(lambda url: "uprot.net" in url, timeout=15000)
-                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                    except Exception:
-                        pass  # Continue anyway, page might have loaded
-                
-                # Wait for the redirect link to appear
-                try:
-                    await page.wait_for_selector("a[href*='maxstream'], a[href*='stayonline'], a", timeout=20000)
-                except Exception:
-                    logger.debug(f"Playwright: selector wait timed out, checking page anyway")
-                
-                # Extract href from first <a> tag
-                href = await page.evaluate("""() => {
-                    let a = document.querySelector('a[href*="maxstream"]') 
-                         || document.querySelector('a[href*="stayonline"]')
-                         || document.querySelector('a');
-                    return a ? a.href : null;
-                }""")
-                
-                if href:
-                    logger.info(f"Playwright extracted uprot redirect: {href}")
+                if href and "uprot" not in href:
                     return href
-                
-                # Check if page redirected to maxstream directly
-                current_url = page.url
-                if "maxstream" in current_url or "stayonline" in current_url:
-                    logger.info(f"Playwright followed redirect to: {current_url}")
-                    return current_url
-                
-                # Last try: get page content and parse
-                content = await page.content()
-                logger.debug(f"Playwright page content (first 500): {content[:500]}")
-                soup = BeautifulSoup(content, "lxml")
-                a_tag = soup.find("a")
-                if a_tag and a_tag.get("href"):
-                    return a_tag["href"]
-                
-                raise ExtractorError(f"Playwright could not find redirect on uprot page")
-            finally:
-                await browser.close()
+        
+        # Specific Bulma selectors
+        for selector in ['a[href*="maxstream"]', 'a[href*="stayonline"]', '.button.is-info', '.button.is-success', 'a.button']:
+            tag = soup.select_one(selector)
+            if tag and tag.get("href") and "uprot" not in tag["href"]:
+                return tag["href"]
+        
+        # If it's a form
+        form = soup.find("form")
+        if form and form.get("action") and "uprot" not in form["action"]:
+            return form["action"]
+            
+        return None
 
     async def get_uprot(self, link: str):
         """Extract MaxStream URL from uprot redirect."""
-        if "msf" in link:
-            link = link.replace("msf", "mse")
+        # Fix link type
+        link = link.replace("msf", "mse")
         
-        # Try Playwright first (bypasses Cloudflare TLS fingerprinting)
-        try:
-            return await self._get_uprot_playwright(link)
-        except ImportError:
-            logger.warning("Playwright not installed, skipping browser-based uprot bypass")
-        except Exception as e:
-            logger.warning(f"Playwright uprot failed ({e}), falling back to aiohttp")
-        
-        # Fallback: aiohttp with DoH
+        # Direct request (user should provide non-datacenter proxy in GLOBAL_PROXY)
         text = await self._smart_request(link)
         
-        soup = BeautifulSoup(text, "lxml")
-        a_tag = soup.find("a")
-        if not a_tag:
-            # Fallback: maybe the link is in a script or button
-            button = soup.find("button", class_="button is-info")
-            if button and button.parent.name == "a":
-                maxstream_url = button.parent.get("href")
-            else:
-                logger.error(f"Could not find 'Continue' link in uprot page: {text[:500]}...")
-                raise ExtractorError("Failed to find redirect link on uprot.net")
-        else:
-            maxstream_url = a_tag.get("href")
+        # 1. Try normal parse
+        res = self._parse_uprot_html(text)
+        if res:
+            return res
             
-        return maxstream_url
+        # 2. If no link, try puzzle/captcha solver
+        logger.info("Direct link not found, checking for captcha...")
+        res = await self._solve_uprot_captcha(text, link)
+        if res:
+            return res
+            
+        # If we see "Cloudflare" or "Challenge" in text, it's a block
+        if "cf-challenge" in text or "ray id" in text.lower() or "checking your browser" in text.lower():
+            raise ExtractorError("Cloudflare block (Browser check/Challenge)")
+            
+        logger.error(f"Uprot Parse Failure. Content: {text[:2000]}...")
+        raise ExtractorError("Redirect link not found in uprot page")
 
     async def extract(self, url: str, **kwargs) -> dict:
         """Extract Maxstream URL."""
         maxstream_url = await self.get_uprot(url)
+        logger.info(f"Target URL: {maxstream_url}")
         
-        text = await self._smart_request(maxstream_url, headers={"accept-language": "en-US,en;q=0.5"})
-
-        # Try direct extraction first
+        # Use strict headers to avoid Error 131
+        headers = {
+            **self.base_headers,
+            "referer": "https://uprot.net/",
+            "accept-language": "en-US,en;q=0.5"
+        }
+        
+        text = await self._smart_request(maxstream_url, headers=headers)
+        
+        # Direct sources check
         direct_match = re.search(r'sources:\s*\[\{src:\s*"([^"]+)"', text)
         if direct_match:
-            final_url = direct_match.group(1)
-            logger.info(f"Successfully extracted direct MaxStream URL: {final_url}")
-            self.base_headers["referer"] = url
             return {
-                "destination_url": final_url,
-                "request_headers": self.base_headers,
+                "destination_url": direct_match.group(1),
+                "request_headers": {**self.base_headers, "referer": maxstream_url},
                 "mediaflow_endpoint": self.mediaflow_endpoint,
             }
+
+        # Fallback to packer logic
+        match = re.search(r"\}\('(.+)',.+,'(.+)'\.split", text)
+        if not match:
+             match = re.search(r"eval\(function\(p,a,c,k,e,d\).+?\}\('(.+?)',.+?,'(.+?)'\.split", text, re.S)
+        
+        if not match:
+            raise ExtractorError(f"Failed to extract from: {text[:200]}")
+
+        # ... rest of packer logic (terms.index, etc) ...})
+        # ... rest of regex logic ...
 
         # Fallback to packer logic
         match = re.search(r"\}\('(.+)',.+,'(.+)'\.split", text)
