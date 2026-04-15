@@ -631,8 +631,15 @@ class HLSProxy:
                     return self.extractors[key]
                 elif host == "maxstream":
                     if key not in self.extractors:
+                        proxy_candidates = []
+                        for candidate in ("uprot.net", "maxstream.video", "maxstream"):
+                            proxy = get_proxy_for_url(
+                                candidate, TRANSPORT_ROUTES, GLOBAL_PROXIES
+                            )
+                            if proxy and proxy not in proxy_candidates:
+                                proxy_candidates.append(proxy)
                         self.extractors[key] = MaxstreamExtractor(
-                            request_headers, proxies=GLOBAL_PROXIES
+                            request_headers, proxies=proxy_candidates
                         )
                     return self.extractors[key]
                 elif host in ["okru", "ok.ru"]:
@@ -911,8 +918,13 @@ class HLSProxy:
                 return self.extractors[key]
             elif "maxstream" in url or "uprot.net" in url:
                 key = "maxstream"
-                proxy = get_proxy_for_url("maxstream", TRANSPORT_ROUTES, GLOBAL_PROXIES)
-                proxy_list = [proxy] if proxy else []
+                proxy_list = []
+                for candidate in (url, "uprot.net", "maxstream.video", "maxstream"):
+                    proxy = get_proxy_for_url(
+                        candidate, TRANSPORT_ROUTES, GLOBAL_PROXIES
+                    )
+                    if proxy and proxy not in proxy_list:
+                        proxy_list.append(proxy)
                 if key not in self.extractors:
                     self.extractors[key] = MaxstreamExtractor(
                         request_headers, proxies=proxy_list
