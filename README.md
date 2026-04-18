@@ -57,7 +57,7 @@ EasyProxy is available in two versions to suit your needs:
 
 **Quick Start (Full Version):**
 ```bash
-docker run -d -p 7860:7860 --name EasyProxy ghcr.io/realbestia1/easyproxy:latest
+docker run -d -p 7860:7860 --name EasyProxy ghcr.io/realbestia1/easyproxy:full
 ```
 
 **Custom Build:**
