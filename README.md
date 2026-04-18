@@ -48,19 +48,28 @@
 
 ### 🐳 Docker (Recommended)
 
-**Ensure you have a `Dockerfile` and `requirements.txt` in the root of the project.**
+EasyProxy is available in two versions to suit your needs:
 
+| Version | Tag | Contents | Best for |
+|:---|:---|:---|:---|
+| **Full (Standalone)** | `latest` / `full` | Proxy + FlareSolverr + Byparr | Quick setup, Cloud hosting (Render, HF, etc.) |
+| **Light** | `light` | Only Proxy | Advanced users, custom `docker-compose` setups |
+
+**Quick Start (Full Version):**
 ```bash
-git clone https://github.com/stremio-manager/EasyProxy.git
-cd EasyProxy
-docker build -t EasyProxy .
-docker run -d -p 7860:7860 --name EasyProxy EasyProxy
+docker run -d -p 7860:7860 --name EasyProxy ghcr.io/realbestia1/easyproxy:latest
+```
+
+**Custom Build:**
+```bash
+# Build the full version locally
+docker build -t easyproxy -f Dockerfile.full .
 ```
 
 ### 🐍 Direct Python
 
 ```bash
-git clone https://github.com/stremio-manager/EasyProxy.git
+git clone https://github.com/realbestia1/EasyProxy.git
 cd EasyProxy
 pip install -r requirements.txt
 python -m playwright install
@@ -78,7 +87,7 @@ python app.py
 ### ▶️ Render
 
 1. **Projects** → **New → Web Service** → *Public Git Repository*
-2. **Repository**: `https://github.com/stremio-manager/EasyProxy`
+2. **Repository**: `https://github.com/realbestia1/EasyProxy`
 3. **Build Command**: `pip install -r requirements.txt`
 4. **Start Command**: `gunicorn --bind 0.0.0.0:7860 --workers 4 --worker-class aiohttp.worker.GunicornWebWorker app:app`
 5. **Deploy**
@@ -104,7 +113,7 @@ heroku create EasyProxy && git push heroku main
 
 ### 🚀 Koyeb
 1. Create a new **Web Service** on Koyeb.
-2. Select **GitHub** as the source and enter the repository URL: `https://github.com/stremio-manager/EasyProxy`
+2. Select **GitHub** as the source and enter the repository URL: `https://github.com/realbestia1/EasyProxy`
 3. Select Dockerfile
 4. Select CPU Eco - Free
 5. Go to **Environment variables**.
@@ -129,6 +138,7 @@ Optimized for:
 
 - **Python 3.8+**
 - **FFmpeg** (necessary for transcoding MPD streams)
+- **FlareSolverr & Byparr** (Required for Deltabit, DoodStream, etc.)
 - **aiohttp**
 - **gunicorn** (optional, recommended for Linux)
 
@@ -138,24 +148,36 @@ Optimized for:
 > - **macOS**: `brew install ffmpeg`
 > - **Termux**: `pkg install ffmpeg`
 
-### 🔧 Full Installation
+### 🔧 Full Local Setup (Windows/Linux without Docker)
 
+To run the full extraction pipeline on your host machine, follow these steps:
+
+#### 1. Setup Solvers (The "Helper" services)
+Download and run the solvers before starting the proxy:
+- **FlareSolverr**: [Download Windows Release](https://github.com/FlareSolverr/FlareSolverr/releases). Extract and run `flaresolverr.exe` (Port 8191).
+- **Byparr**: [Download Windows Release](https://github.com/ThePhaseless/Byparr/releases). Run `byparr-windows-amd64.exe` (Port 8192).
+
+#### 2. Install EasyProxy
 ```bash
 # Clone repository
-git clone https://github.com/stremio-manager/EasyProxy.git
+git clone https://github.com/realbestia1/EasyProxy.git
 cd EasyProxy
 
-# Install dependencies
+# Install Python dependencies
 pip install -r requirements.txt
 
-# Install Playwright browsers (required for browser-assisted extractors)
-python -m playwright install
+# Install Playwright browsers (required for extraction)
+python -m playwright install chromium
+```
 
-# Start 
-gunicorn --bind 0.0.0.0:7860 --workers 4 --worker-class aiohttp.worker.GunicornWebWorker app:app
-
+#### 3. Start
+```bash
 # Start on Windows
 python app.py
+
+# Start on Linux (Gunicorn)
+gunicorn --bind 0.0.0.0:7860 --workers 4 --worker-class aiohttp.worker.GunicornWebWorker app:app
+```
 ```
 
 ### 🐧 Termux (Android)
@@ -163,9 +185,9 @@ python app.py
 ```bash
 pkg update && pkg upgrade
 pkg install python git ffmpeg -y
-git clone https://github.com/stremio-manager/EasyProxy.git
+git clone https://github.com/realbestia1/EasyProxy.git
 cd EasyProxy
-pkg install clang libxml2 libxslt python
+pkg install clang libxml2 libxslt -y
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 python -m playwright install
@@ -175,8 +197,11 @@ python app.py
 ### 🐳 Advanced Docker
 
 ```bash
-# Custom Build
-docker build -t EasyProxy .
+# Custom Build (Full version)
+docker build -t EasyProxy -f Dockerfile.full .
+
+# Custom Build (Light version)
+# docker build -t EasyProxy -f Dockerfile.light .
 
 # Run with custom configurations
 docker run -d -p 7860:7860 \
@@ -195,9 +220,35 @@ docker run -d -p 7860:7860 \
 The easiest way to configure proxies is through a `.env` file.
 
 1.  **Create a `.env` file** in the main project folder (you can rename the `.env.example` file).
-2.  **Add your proxy variables** to the `.env` file.
+2.  **Add your proxy/solver variables** to the `.env` file.
 
-**Example `.env` file:**
+### 🛡️ Solver Configuration (Cloudflare Bypass)
+
+For some providers, EasyProxy requires external "Solvers" to bypass Cloudflare and bot challenges:
+
+| Service | Supported Providers | Description |
+|:---|:---|:---|
+| **FlareSolverr** | Deltabit, Mixdrop, MaxStream | Handles browser verification and redirects. |
+| **Byparr** | DoodStream | Ensures IP consistency for video tokens. |
+
+**Setup with Docker Compose (Recommended):**
+The provided `docker-compose.yml` already includes these services. Simply run:
+```bash
+docker-compose up -d
+```
+
+**Manual Configuration (.env):**
+```env
+# FlareSolverr (Default port: 8191)
+FLARESOLVERR_URL=http://flaresolverr:8191
+FLARESOLVERR_TIMEOUT=60
+
+# Byparr (Default port: 8192)
+BYPARR_URL=http://byparr:8192
+BYPARR_PORT=8192
+```
+
+**Global proxy for all traffic**
 
 ```env
 # Global proxy for all traffic
@@ -618,8 +669,7 @@ docker rm -f EasyProxy
 
 ## 🤝 Contributing
 
-Contributions are welcome! To contribute:
-
+Contributions are welcome! To:
 1. **Fork** the repository
 2. **Create** a branch for changes (`git checkout -b feature/AmazingFeature`)
 3. **Commit** the changes (`git commit -m 'Add some AmazingFeature'`)
