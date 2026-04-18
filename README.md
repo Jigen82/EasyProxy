@@ -32,23 +32,36 @@ docker run -d -p 7860:7860 --name EasyProxy ghcr.io/realbestia1/easyproxy:latest
 
 # Full Version (Proxy + Solvers)
 docker run -d -p 7860:7860 --name EasyProxy ghcr.io/realbestia1/easyproxy:full
+
+# Full Version + Cloudflare WARP (Bypass IP blocks)
+docker run -d --name EasyProxy --cap-add=NET_ADMIN --device /dev/net/tun -e ENABLE_WARP=true -p 7860:7860 ghcr.io/realbestia1/easyproxy:full
 ```
 
 ### 🐍 Python (Local)
-For a simple "Light" install, run the proxy directly. For "Full" mode (to use solvers like FlareSolverr/Byparr), you must run them separately.
 
-**1. Install Solvers (Optional, for Full Mode)**
-- **FlareSolverr**: [Download](https://github.com/FlareSolverr/FlareSolverr/releases) and run `flaresolverr.exe` (Port 8191).
-- **Byparr**: [Download](https://github.com/ThePhaseless/Byparr/releases) and run `byparr.exe` (Port 8192).
+#### Prerequisites (All Platforms)
+- **Python 3.11+**
+- **Git** (for cloning dependencies)
+- **FFmpeg** (for stream recording/remuxing)
 
-**2. Start EasyProxy**
-```bash
-git clone https://github.com/realbestia1/EasyProxy.git
-cd EasyProxy
-pip install -r requirements.txt
-python -m playwright install chromium
-python app.py
-```
+#### 🪟 Windows Setup
+The easiest way to get the **Full** experience (Proxy + Solvers) on Windows:
+1. Clone the repository and enter the folder.
+2. Run **`start_full.bat`**.
+*This script automatically handles FlareSolverr, Byparr, patches, and dependencies.*
+
+#### 🐧 Linux / macOS Setup
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   python -m playwright install chromium
+   ```
+2. **Start EasyProxy**:
+   ```bash
+   python app.py
+   ```
+*Note: For "Full" mode on Linux, you must start FlareSolverr and Byparr manually or use the [Docker](#-docker) version.*
+
 *Access the dashboard at `http://localhost:7860`*
 
 ---
@@ -77,6 +90,21 @@ Configure the server via a `.env` file. See `.env.example` for all options.
 | `FLARESOLVERR_TIMEOUT` | Timeout for FlareSolverr requests (seconds) | `30` |
 | `BYPARR_URL` | URL for Byparr (Not needed in Full version) | `http://localhost:8192` |
 | `DVR_ENABLED` | Enable recording features | `false` |
+| `ENABLE_WARP` | Enable integrated Cloudflare WARP (Full version only) | `false` |
+| `WARP_LICENSE_KEY` | Optional WARP+ license key | - |
+
+### 🛡️ Cloudflare WARP Integration
+The **Full** version includes an integrated Cloudflare WARP client to bypass IP-based blocks. When enabled, all outgoing traffic (including FlareSolverr and Byparr) is automatically routed through the Cloudflare network.
+
+**Requirements:**
+To function correctly, the container needs elevated network permissions:
+- **Docker Compose:** Handled automatically in the provided `docker-compose.yml`.
+- **Docker Run:** You must add `--cap-add=NET_ADMIN --device /dev/net/tun`.
+
+**Example command:**
+```bash
+docker run -d --name easyproxy --cap-add=NET_ADMIN --device /dev/net/tun -e ENABLE_WARP=true -p 7860:7860 ghcr.io/realbestia1/easyproxy:full
+```
 
 ---
 
