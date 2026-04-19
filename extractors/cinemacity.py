@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp_socks import ProxyConnector
+from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,10 @@ class CinemaCityExtractor:
         self.request_headers = request_headers
         self.proxies = proxies or []
         self.session = None
-        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
         self.base_url = "https://cinemacity.cc"
+        self.flaresolverr_url = FLARESOLVERR_URL
+        self.flaresolverr_timeout = FLARESOLVERR_TIMEOUT
 
     def _get_random_proxy(self):
         return random.choice(self.proxies) if self.proxies else None
@@ -37,6 +40,38 @@ class CinemaCityExtractor:
             connector = ProxyConnector.from_url(proxy) if proxy else TCPConnector(limit=0, use_dns_cache=True)
             self.session = ClientSession(timeout=timeout, connector=connector, headers={'User-Agent': self.user_agent})
         return self.session
+
+    async def _request_flaresolverr(self, cmd: str, url: str = None, post_data: str = None) -> dict:
+        """Performs a request via FlareSolverr."""
+        if not self.flaresolverr_url:
+            raise ExtractorError("FlareSolverr URL not configured")
+
+        endpoint = f"{self.flaresolverr_url.rstrip('/')}/v1"
+        payload = {
+            "cmd": cmd,
+            "maxTimeout": (self.flaresolverr_timeout + 60) * 1000,
+        }
+        if url: payload["url"] = url
+        if post_data: payload["postData"] = post_data
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(
+                    endpoint,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=self.flaresolverr_timeout + 95),
+                ) as resp:
+                    if resp.status != 200:
+                        raise ExtractorError(f"FlareSolverr HTTP {resp.status}")
+                    data = await resp.json()
+            except Exception as e:
+                logger.error(f"CinemaCity: FlareSolverr request failed ({cmd}): {e}")
+                raise ExtractorError(f"FlareSolverr bypass failed: {e}")
+
+        if data.get("status") != "ok":
+            raise ExtractorError(f"FlareSolverr ({cmd}): {data.get('message', 'unknown error')}")
+        
+        return data
 
     def base64_decode(self, data: str) -> str:
         try:
@@ -116,8 +151,27 @@ class CinemaCityExtractor:
         }
 
         async with session.get(url, headers=headers) as response:
-            if response.status != 200: raise ExtractorError(f"HTTP {response.status}")
-            html = await response.text()
+            if response.status != 200:
+                logger.warning(f"CinemaCity: Direct access failed with HTTP {response.status}, trying FlareSolverr...")
+                html = ""
+            else:
+                html = await response.text()
+
+        # Fallback to FlareSolverr if direct access fails or returns block page
+        if not html or "cf-challenge" in html or "ray id" in html.lower():
+            if self.flaresolverr_url:
+                try:
+                    logger.info(f"CinemaCity: Using FlareSolverr for {url}")
+                    res = await self._request_flaresolverr("request.get", url)
+                    html = res.get("solution", {}).get("response", "")
+                    # Update user agent if returned by FlareSolverr
+                    sol_ua = res.get("solution", {}).get("userAgent")
+                    if sol_ua: self.user_agent = sol_ua
+                except Exception as e:
+                    logger.error(f"CinemaCity: FlareSolverr bypass failed: {e}")
+            
+        if not html:
+            raise ExtractorError("Failed to retrieve page content (Direct & FlareSolverr failed)")
 
         # Find player for referer
         iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']*player\.php[^"\']*)["\']', html, re.I)
@@ -169,7 +223,7 @@ class CinemaCityExtractor:
         return {
             "destination_url": safe_url,
             "request_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
                 "Upgrade-Insecure-Requests": "1",
                 "Sec-Fetch-Dest": "document",
                 "Sec-Fetch-Mode": "navigate",
