@@ -2,7 +2,7 @@ name: Hugging Face Nightly Factory Rebuild
 
 on:
   schedule:
-    - cron: '0 * * * *'   # ogni ora
+    - cron: "0 */4 * * *"   # ogni 4 ore
   workflow_dispatch:
 
 concurrency:
