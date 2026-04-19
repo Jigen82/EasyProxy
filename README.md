@@ -100,11 +100,19 @@ The **Full** version includes an integrated Cloudflare WARP client to bypass IP-
 To function correctly, the container needs elevated network permissions:
 - **Docker Compose:** Handled automatically in the provided `docker-compose.yml`.
 - **Docker Run:** You must add `--cap-add=NET_ADMIN --device /dev/net/tun`.
+- **Coolify (Git Repository / Dockerfile):**
+  1. Go to your application **Settings** -> **General**.
+  2. In the **Custom Docker Options** field, paste:
+     `--cap-add NET_ADMIN --device /dev/net/tun:/dev/net/tun`
+  3. Click **Save** and **Redeploy**.
 
-**Example command:**
+**Example command (Docker Run):**
 ```bash
 docker run -d --name easyproxy --cap-add=NET_ADMIN --device /dev/net/tun -e ENABLE_WARP=true -p 7860:7860 ghcr.io/realbestia1/easyproxy:full
 ```
+
+> [!NOTE]
+> If you are deploying on **HuggingFace Spaces**, WARP cannot be used due to security restrictions. Set `ENABLE_WARP=false` in your environment variables.
 
 ---
 

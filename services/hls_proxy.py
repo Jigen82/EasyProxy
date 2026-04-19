@@ -41,6 +41,9 @@ from config import (
     API_PASSWORD,
     check_password,
     MPD_MODE,
+    VERSION_MODE,
+    APP_VERSION,
+    ENABLE_WARP,
 )
 from extractors.generic import GenericHLSExtractor, ExtractorError
 from services.manifest_rewriter import ManifestRewriter
@@ -337,6 +340,58 @@ class HLSProxy:
         # Cache for proxy sessions (proxy_url -> session)
         # This reuses connections for the same proxy to improve performance
         self.proxy_sessions = {}
+
+        # Version information
+        self.latest_version = "Checking..."
+        self.warp_status = "Disabled" if not ENABLE_WARP else "Checking..."
+
+    async def start_tasks(self):
+        """Starts background tasks for the proxy."""
+        asyncio.create_task(self._update_latest_version())
+        # Always start WARP check (universal trace method)
+        asyncio.create_task(self._update_warp_status_loop())
+
+    async def _update_warp_status_loop(self):
+        """Periodically checks WARP status via Cloudflare trace (Universal)."""
+        while True:
+            try:
+                # We use the internal session to check the actual connection state
+                session = await self._get_session()
+                async with session.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=5) as resp:
+                    if resp.status == 200:
+                        text = await resp.text()
+                        if "warp=on" in text:
+                            self.warp_status = "Connected"
+                        else:
+                            self.warp_status = "Disconnected"
+                    else:
+                        self.warp_status = "Error"
+            except Exception:
+                self.warp_status = "Disconnected"
+            
+            await asyncio.sleep(60) # Check every minute
+
+    async def _update_latest_version(self):
+        """Checks GitHub config.py for the latest version."""
+        try:
+            url = "https://raw.githubusercontent.com/realbestia1/EasyProxy/main/config.py"
+            # We use a direct session for this
+            session = await self._get_session()
+            async with session.get(url, timeout=5) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    # Use regex to find APP_VERSION = "..." or '...'
+                    match = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', text)
+                    if match:
+                        self.latest_version = match.group(1)
+                        logger.info(f"🆕 Latest version detected in GitHub config.py: {self.latest_version}")
+                    else:
+                        self.latest_version = "Unknown"
+                else:
+                    self.latest_version = "Error"
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to check latest version from GitHub config: {e}")
+            self.latest_version = "Unknown"
 
     @staticmethod
     def _strip_fake_png_header_from_ts(content: bytes) -> bytes:
@@ -813,10 +868,12 @@ class HLSProxy:
                         request_headers, proxies=proxy_list
                     )
                 return self.extractors[key]
-            elif "popcdn.day" in url:
+            elif "popcdn.day" in url or "freeshot.live" in url:
                 key = "freeshot"
                 proxy = get_proxy_for_url(
-                    "popcdn.day", TRANSPORT_ROUTES, GLOBAL_PROXIES
+                    "popcdn.day" if "popcdn.day" in url else "freeshot.live", 
+                    TRANSPORT_ROUTES, 
+                    GLOBAL_PROXIES
                 )
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
@@ -2645,6 +2702,16 @@ class HLSProxy:
         """Serve la pagina principale index.html."""
         try:
             html_content = self._read_template("index.html")
+            
+            # Determine version status class
+            is_outdated = self.latest_version not in ["Checking...", "Unknown", "Error", APP_VERSION]
+            version_status_class = "outdated" if is_outdated else ""
+
+            html_content = html_content.replace("{{VERSION_MODE}}", VERSION_MODE)
+            html_content = html_content.replace("{{APP_VERSION}}", APP_VERSION)
+            html_content = html_content.replace("{{LATEST_VERSION}}", self.latest_version)
+            html_content = html_content.replace("{{VERSION_STATUS_CLASS}}", version_status_class)
+            html_content = html_content.replace("{{WARP_STATUS}}", self.warp_status)
             return web.Response(text=html_content, content_type="text/html")
         except Exception as e:
             logger.error(f"❌ Critical error: unable to load 'index.html': {e}")
@@ -2710,6 +2777,16 @@ class HLSProxy:
         """Serve la pagina HTML delle informazioni."""
         try:
             html_content = self._read_template("info.html")
+
+            # Determine version status class
+            is_outdated = self.latest_version not in ["Checking...", "Unknown", "Error", APP_VERSION]
+            version_status_class = "outdated" if is_outdated else ""
+
+            html_content = html_content.replace("{{VERSION_MODE}}", VERSION_MODE)
+            html_content = html_content.replace("{{APP_VERSION}}", APP_VERSION)
+            html_content = html_content.replace("{{LATEST_VERSION}}", self.latest_version)
+            html_content = html_content.replace("{{VERSION_STATUS_CLASS}}", version_status_class)
+            html_content = html_content.replace("{{WARP_STATUS}}", self.warp_status)
             return web.Response(text=html_content, content_type="text/html")
         except Exception as e:
             logger.error(f"❌ Critical error: unable to load 'info.html': {e}")
@@ -2741,7 +2818,8 @@ class HLSProxy:
         """Endpoint API che restituisce le informazioni sul server in formato JSON."""
         info = {
             "proxy": "HLS Proxy Server",
-            "version": "2.5.0",  # Aggiornata per supporto AES-128
+            "version": APP_VERSION,  # Aggiornata per supporto AES-128
+            "mode": VERSION_MODE,
             "status": "✅ Running",
             "features": [
                 "✅ Proxy HLS streams",
