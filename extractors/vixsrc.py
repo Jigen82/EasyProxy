@@ -261,14 +261,18 @@ class VixSrcExtractor:
             headers={
                 "accept": "application/json, text/plain, */*",
                 "referer": url,
+                "x-requested-with": "XMLHttpRequest",
                 **self._default_headers(),
             },
         )
 
         try:
             # ✅ Usa il contenuto pre-parsato se disponibile, altrimenti parsa la stringa
-            payload = getattr(response, 'json_content', None) or json.loads(response.text)
+            text_content = getattr(response, 'text', '')
+            payload = getattr(response, 'json_content', None) or json.loads(text_content)
         except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+            preview = text_content[:200] if 'text_content' in locals() else "N/A"
+            logger.error(f"❌ VixSrc API JSON Error. Response starts with: {preview}")
             raise ExtractorError(f"Invalid API response from {api_url}: {exc}")
 
         embed_path = payload.get("src")

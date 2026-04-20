@@ -56,10 +56,16 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
     if HAS_CURL_CFFI:
         try:
             logger.info(f"SmartRequest (curl_cffi): Impersonazione browser per {url}")
-            async with CurlAsyncSession(impersonate="chrome") as s:
+            async with CurlAsyncSession(impersonate="chrome124") as s:
                 curl_proxies = {"http": proxy, "https": proxy} if proxy else None
+                
+                # ✅ FIX: Rimuovi User-Agent per evitare discrepanze col fingerprint TLS
+                curl_headers = dict(headers)
+                if "User-Agent" in curl_headers: del curl_headers["User-Agent"]
+                if "user-agent" in curl_headers: del curl_headers["user-agent"]
+                
                 c_method = s.get if cmd.lower() == "request.get" else s.post
-                c_resp = await c_method(url, headers=headers, data=post_data, proxies=curl_proxies, timeout=30)
+                c_resp = await c_method(url, headers=curl_headers, data=post_data, proxies=curl_proxies, timeout=30)
                 
                 if c_resp.status_code == 200:
                     # Restituiamo sempre lo stesso formato dizionario
