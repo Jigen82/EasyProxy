@@ -26,7 +26,7 @@ class CinemaCityExtractor:
         self.request_headers = request_headers
         self.proxies = proxies or GLOBAL_PROXIES
         self.session = None
-        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         self.base_url = "https://cinemacity.cc"
         self.flaresolverr_url = FLARESOLVERR_URL
         self.flaresolverr_timeout = FLARESOLVERR_TIMEOUT
@@ -169,7 +169,8 @@ class CinemaCityExtractor:
         headers = {
             "User-Agent": self.user_agent,
             "Cookie": cookies,
-            "Referer": f"{self.base_url}/"
+            "Referer": f"{self.base_url}/",
+            "X-Requested-With": "XMLHttpRequest"
         }
 
         # Use SmartRequest (Direct or FlareSolverr fallback)
@@ -220,13 +221,21 @@ class CinemaCityExtractor:
         stream_url = self.pick_stream(file_data, media_type, season, episode)
         if not stream_url: raise ExtractorError("Pick failed")
 
-        # Use dynamic cookies if available, otherwise fallback to fixed ones
         safe_url = str(yarl.URL(stream_url, encoded=True))
+        
+        # ✅ FIX: Unisci i cookie di sessione con quelli dinamici (Cloudflare/PHPSESSID)
+        merged_cookies = {}
+        # 1. Carica i cookie di sessione base
+        for c in cookies.split(";"):
+            if "=" in c:
+                k, v = c.strip().split("=", 1)
+                merged_cookies[k] = v
+        
+        # 2. Sovrascrivi/Aggiungi quelli dinamici
         if dynamic_cookies:
-            clean_cookies = "; ".join([f"{k}={v}" for k, v in dynamic_cookies.items()])
-        else:
-            # Fallback to hardcoded valid session cookies
-            clean_cookies = self.get_session_cookies()
+            merged_cookies.update(dynamic_cookies)
+            
+        clean_cookies = "; ".join([f"{k}={v}" for k, v in merged_cookies.items()])
         
         # Standard cookies don't strictly require a trailing semicolon
         clean_cookies = clean_cookies.strip().rstrip(';')
@@ -235,7 +244,7 @@ class CinemaCityExtractor:
         return {
             "destination_url": safe_url,
             "request_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Referer": url,
                 "Cookie": clean_cookies
             },

@@ -2423,6 +2423,12 @@ class HLSProxy:
                     # Some CDNs prefer the base domain over the full page URL
                     if "cccdn.net" in stream_url:
                         curl_headers["Referer"] = "https://cinemacity.cc/"
+                        curl_headers["Origin"] = "https://cinemacity.cc"
+                        curl_headers["Sec-Fetch-Site"] = "same-site"
+                        curl_headers["Sec-Fetch-Mode"] = "cors"
+                        curl_headers["Sec-Fetch-Dest"] = "empty"
+                        if "Accept-Language" not in curl_headers:
+                            curl_headers["Accept-Language"] = "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
                     elif "Referer" not in curl_headers and "referer" not in curl_headers:
                         # Fallback for others if missing
                         pass 

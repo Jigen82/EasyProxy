@@ -22,7 +22,12 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
     
     headers = headers or {}
     if "User-Agent" not in headers and "user-agent" not in headers:
-        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    
+    # ✅ FIX: Pulisci il Referer per domini critici se necessario
+    for ref_key in ["Referer", "referer"]:
+        if ref_key in headers and "cccdn.net" in url:
+            headers[ref_key] = "https://cinemacity.cc/"
 
     # Pattern comuni per identificare protezioni Cloudflare o simili
     CF_MARKERS = [
