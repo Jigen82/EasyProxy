@@ -123,6 +123,13 @@ def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
     # Se non trova corrispondenza, SSL abilitato per default
     return False
 
+# --- WARP Configuration ---
+ENABLE_WARP = os.environ.get("ENABLE_WARP", "false").lower() == "true"
+
+# Configurazione proxy
+GLOBAL_PROXIES = parse_proxies('GLOBAL_PROXY')
+TRANSPORT_ROUTES = parse_transport_routes()
+
 # Configurazione proxy
 GLOBAL_PROXIES = parse_proxies('GLOBAL_PROXY')
 TRANSPORT_ROUTES = parse_transport_routes()
@@ -141,31 +148,39 @@ MAX_RECORDING_DURATION = int(os.environ.get("MAX_RECORDING_DURATION", 28800))  #
 RECORDINGS_RETENTION_DAYS = int(os.environ.get("RECORDINGS_RETENTION_DAYS", 7))  # Auto-cleanup after 7 days
 
 # --- Version/Mode Configuration ---
-APP_VERSION = "2.5.2"
+APP_VERSION = "2.5.19"
 
 # Detect if we are running in Full or Light mode
 _has_solvers = os.path.exists("flaresolverr") and (os.path.exists("byparr") or os.path.exists("byparr_src"))
 VERSION_MODE = "Full" if _has_solvers else "Light"
-
-# --- WARP Configuration ---
-ENABLE_WARP = os.environ.get("ENABLE_WARP", "false").lower() == "true"
 
 # Create recordings directory if DVR is enabled
 if DVR_ENABLED and not os.path.exists(RECORDINGS_DIR):
     os.makedirs(RECORDINGS_DIR)
     logging.info(f"📹 Created recordings directory: {RECORDINGS_DIR}")
 
-# MPD Processing Mode: 'ffmpeg' (transcoding) or 'legacy' (mpd_converter)
-MPD_MODE = os.environ.get("MPD_MODE", "legacy").lower()
+# MPD Processing Mode detection
+_mpd_mode_env = os.environ.get("MPD_MODE", "legacy").lower()
+
+if _mpd_mode_env in ("ffmpeg", "legacy", "none", "disabled"):
+    MPD_MODE = _mpd_mode_env
+else:
+    logging.warning(f"⚠️ MPD_MODE '{_mpd_mode_env}' non valida. Uso 'legacy'.")
+    MPD_MODE = "legacy"
+
+# Il remuxing è attivo di default per legacy/ffmpeg, ma spento per none/disabled
+ENABLE_REMUXING = os.environ.get("ENABLE_REMUXING", "true").lower() in ("true", "1", "yes")
+if MPD_MODE in ("none", "disabled"):
+    ENABLE_REMUXING = False
+
+# Mostra il log solo se la variabile è stata impostata esplicitamente per evitare confusione
+if "MPD_MODE" in os.environ:
+    logging.info(f"🎬 MPD Mode: {MPD_MODE} (Remuxing: {'ON' if ENABLE_REMUXING else 'OFF'})")
 
 # --- FlareSolverr / Byparr Configuration ---
 FLARESOLVERR_URL = os.environ.get("FLARESOLVERR_URL", "http://localhost:8191").rstrip("/")
 FLARESOLVERR_TIMEOUT = int(os.environ.get("FLARESOLVERR_TIMEOUT", 30))
 BYPARR_URL = os.environ.get("BYPARR_URL", "http://localhost:8080").rstrip("/")
-if MPD_MODE not in ("ffmpeg", "legacy"):
-    logging.warning(f"⚠️ MPD_MODE '{MPD_MODE}' is invalid. Using 'legacy' as default.")
-    MPD_MODE = "legacy"
-logging.info(f"🎬 MPD Mode: {MPD_MODE}")
 
 def check_password(request):
     """Verifica la password API se impostata."""

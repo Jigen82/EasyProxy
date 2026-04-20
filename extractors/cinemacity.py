@@ -132,6 +132,12 @@ class CinemaCityExtractor:
                 idx = max(0, int(episode) - 1)
                 ep_data = selected_season[idx] if idx < len(selected_season) else selected_season[0]
                 selected_ep = ep_data.get('file')
+            
+            if selected_ep:
+                logger.info(f"CinemaCity: Selected S{season}E{episode} -> {selected_ep[:50]}...")
+            else:
+                logger.warning(f"CinemaCity: Failed to find S{season}E{episode} in file_data")
+            
             return selected_ep
         return None
 
@@ -141,8 +147,15 @@ class CinemaCityExtractor:
         
         # Get params from kwargs or URL query
         media_type = kwargs.get('type', 'movie')
-        season = int(kwargs.get('s', kwargs.get('season', 1)))
-        episode = int(kwargs.get('e', kwargs.get('episode', 1)))
+        
+        # Try to extract s/e from URL if not in kwargs
+        url_params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        
+        s_val = kwargs.get('s') or kwargs.get('season') or url_params.get('s', [None])[0] or url_params.get('season', ['1'])[0]
+        e_val = kwargs.get('e') or kwargs.get('episode') or url_params.get('e', [None])[0] or url_params.get('episode', ['1'])[0]
+        
+        season = int(s_val) if str(s_val).isdigit() else 1
+        episode = int(e_val) if str(e_val).isdigit() else 1
 
         headers = {
             "User-Agent": self.user_agent,
