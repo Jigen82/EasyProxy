@@ -9,7 +9,7 @@ import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp_socks import ProxyConnector
 
-from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url
+from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES
 from utils.packed import eval_solver
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class MixdropExtractor:
         }
         self.session = None
         self.mediaflow_endpoint = "proxy_stream_endpoint"
-        self.proxies = proxies or []
+        self.proxies = proxies or GLOBAL_PROXIES
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -45,7 +45,15 @@ class MixdropExtractor:
             "cmd": cmd,
             "maxTimeout": (FLARESOLVERR_TIMEOUT + 60) * 1000,
         }
-        if url: payload["url"] = url
+        if url: 
+            payload["url"] = url
+            # Determina dinamicamente il proxy per questo specifico URL
+            proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
+            if proxy:
+                # FlareSolverr richiede il proxy nel formato {"url": "..."}
+                payload["proxy"] = {"url": proxy}
+                logger.debug(f"Mixdrop: Passing proxy to FlareSolverr: {proxy}")
+
         if post_data: payload["postData"] = post_data
         if session_id: payload["session"] = session_id
 

@@ -43,13 +43,12 @@ if [ "$ENABLE_WARP" = "true" ]; then
         # Connect
         echo "🔗 Connecting to WARP..."
         
-        # Add exclusions for domains that block WARP (Cinemacity)
+        # Add exclusions for domains that block WARP or need real IP
         # We try both new (v2024+) and old warp-cli commands for compatibility
-        (warp-cli --accept-tos tunnel host add cinemacity.cc > /dev/null 2>&1 || \
-         warp-cli --accept-tos add-excluded-domain cinemacity.cc > /dev/null 2>&1) || true
-         
-        (warp-cli --accept-tos tunnel host add cccdn.net > /dev/null 2>&1 || \
-         warp-cli --accept-tos add-excluded-domain cccdn.net > /dev/null 2>&1) || true
+        for domain in cinemacity.cc cccdn.net vavoo.to vavoo.tv lokke.app mediahubmx.cc; do
+            (warp-cli --accept-tos tunnel host add $domain > /dev/null 2>&1 || \
+             warp-cli --accept-tos add-excluded-domain $domain > /dev/null 2>&1) || true
+        done
          
          
         # Set mode to Proxy (SOCKS5 mode)
@@ -65,13 +64,21 @@ if [ "$ENABLE_WARP" = "true" ]; then
     fi
 fi
 
+# Configure Proxy variables for sub-processes if WARP is enabled
+PROXY_VARS=""
+if [ "$ENABLE_WARP" = "true" ]; then
+    # We use socks5h:// to ensure remote DNS resolution for sub-processes
+    PROXY_VARS="HTTP_PROXY=socks5h://127.0.0.1:1080 HTTPS_PROXY=socks5h://127.0.0.1:1080 ALL_PROXY=socks5h://127.0.0.1:1080"
+    echo "🌐 FlareSolverr/Byparr will use WARP proxy..."
+fi
+
 # Start FlareSolverr in the background
 echo "🚀 Starting FlareSolverr (v3 Python)..."
-cd /app/flaresolverr && PORT=8191 python3 src/flaresolverr.py &
+cd /app/flaresolverr && eval $PROXY_VARS PORT=8191 python3 src/flaresolverr.py &
 
 # Start Byparr in the background
 echo "🛡️ Starting Byparr..."
-cd /app/byparr_src && PORT=8192 python3 main.py &
+cd /app/byparr_src && eval $PROXY_VARS PORT=8192 python3 main.py &
 
 # Start EasyProxy (Gunicorn)
 echo "🎬 Starting EasyProxy..."

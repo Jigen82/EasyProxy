@@ -46,7 +46,15 @@ class DeltabitExtractor:
             "cmd": cmd,
             "maxTimeout": (settings.flaresolverr_timeout + 60) * 1000,
         }
-        if url: payload["url"] = url
+        if url: 
+            payload["url"] = url
+            # Determina dinamicamente il proxy per questo specifico URL
+            proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
+            if proxy:
+                # FlareSolverr richiede il proxy nel formato {"url": "..."}
+                payload["proxy"] = {"url": proxy}
+                logger.debug(f"Deltabit: Passing proxy to FlareSolverr: {proxy}")
+
         if post_data: payload["postData"] = post_data
         if session_id: payload["session"] = session_id
 

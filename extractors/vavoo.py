@@ -8,6 +8,7 @@ from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp_socks import ProxyConnector
 from typing import Optional, Dict, Any
 from urllib.parse import quote_plus
+from config import get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES, get_connector_for_proxy
 import random
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class VavooExtractor:
         }
         self.session = None
         self.mediaflow_endpoint = "proxy_stream_endpoint"
-        self.proxies = proxies or []
+        self.proxies = proxies or GLOBAL_PROXIES
         self._cached_sig = None
         self._cached_sig_ts = 0
 
@@ -76,17 +77,17 @@ class VavooExtractor:
 
         if self.session is None or self.session.closed:
             timeout = ClientTimeout(total=60, connect=30, sock_read=30)
-            proxy = self._get_random_proxy()
+            
+            # Determina il proxy per l'URL (se fornito)
+            proxy = None
+            if url:
+                proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
+            else:
+                proxy = self._get_random_proxy()
+                
             if proxy:
                 logger.info(f"Using proxy for Vavoo session: {proxy}")
-                
-                connector_url = proxy
-                rdns = True
-                if connector_url.startswith("socks5h://"):
-                    connector_url = connector_url.replace("socks5h://", "socks5://")
-                    rdns = True
-                
-                connector = ProxyConnector.from_url(connector_url, rdns=rdns)
+                connector = get_connector_for_proxy(proxy)
             else:
                 connector = TCPConnector(
                     limit=0,

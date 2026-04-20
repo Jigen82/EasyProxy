@@ -116,6 +116,21 @@ def get_proxy_for_url(url: str, transport_routes: list, global_proxies: list) ->
     # 3. Se non trova corrispondenza e WARP è spento, usa global proxies
     return random.choice(global_proxies) if global_proxies else None
 
+def get_connector_for_proxy(proxy_url: str, **kwargs):
+    """Crea un ProxyConnector (aiohttp-socks) gestendo correttamente socks5h."""
+    from aiohttp_socks import ProxyConnector
+    if not proxy_url:
+        return None
+        
+    connector_url = proxy_url
+    rdns = kwargs.pop('rdns', False)
+    
+    if connector_url.startswith("socks5h://"):
+        connector_url = connector_url.replace("socks5h://", "socks5://")
+        rdns = True
+        
+    return ProxyConnector.from_url(connector_url, rdns=rdns, **kwargs)
+
 def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
     """Determina se SSL deve essere disabilitato per un URL basato su TRANSPORT_ROUTES"""
     if not url or not transport_routes:
@@ -154,7 +169,7 @@ MAX_RECORDING_DURATION = int(os.environ.get("MAX_RECORDING_DURATION", 28800))  #
 RECORDINGS_RETENTION_DAYS = int(os.environ.get("RECORDINGS_RETENTION_DAYS", 7))  # Auto-cleanup after 7 days
 
 # --- Version/Mode Configuration ---
-APP_VERSION = "2.5.20"
+APP_VERSION = "2.5.21"
 
 # Detect if we are running in Full or Light mode
 _has_solvers = os.path.exists("flaresolverr") and (os.path.exists("byparr") or os.path.exists("byparr_src"))

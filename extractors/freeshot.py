@@ -6,7 +6,7 @@ import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp_socks import ProxyConnector
 
-from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT
+from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class FreeshotExtractor:
             "Referer": "https://thisnot.business/",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
-        self.proxies = proxies or []
+        self.proxies = proxies or GLOBAL_PROXIES
         self.session = None
         self.flaresolverr_url = FLARESOLVERR_URL
         self.flaresolverr_timeout = FLARESOLVERR_TIMEOUT
@@ -43,7 +43,14 @@ class FreeshotExtractor:
             "cmd": cmd,
             "maxTimeout": (self.flaresolverr_timeout + 60) * 1000,
         }
-        if url: payload["url"] = url
+        if url: 
+            payload["url"] = url
+            # Determina dinamicamente il proxy per questo specifico URL
+            proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
+            if proxy:
+                payload["proxy"] = {"url": proxy}
+                logger.debug(f"Freeshot: Passing proxy to FlareSolverr: {proxy}")
+
         if post_data: payload["postData"] = post_data
         if session_id: payload["session"] = session_id
 
@@ -66,15 +73,20 @@ class FreeshotExtractor:
         
         return data
 
-    async def _get_session(self):
+    async def _get_session(self, url: str = None):
         if self.session is None or self.session.closed:
-            connector = TCPConnector(ssl=False)
-            # Se volessimo usare proxy per la richiesta iniziale (ma qui l'idea è usare l'IP del server MFP)
-            # if self.proxies:
-            #     proxy = self.proxies[0] # Simple logic
-            #     connector = ProxyConnector.from_url(proxy)
+            # Se viene passato un URL, determina il proxy corretto
+            proxy = None
+            if url:
+                proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
             
-            timeout = ClientTimeout(total=30)  # Increased timeout
+            if proxy:
+                connector = ProxyConnector.from_url(proxy, ssl=False)
+                logger.debug(f"Freeshot: Using proxy for direct request: {proxy}")
+            else:
+                connector = TCPConnector(ssl=False, limit=0, use_dns_cache=True)
+            
+            timeout = ClientTimeout(total=30)
             self.session = ClientSession(connector=connector, timeout=timeout)
         return self.session
 
@@ -111,7 +123,7 @@ class FreeshotExtractor:
                         logger.warning(f"FreeshotExtractor: FlareSolverr fallito per freeshot.live: {e}")
                 
                 if not content:
-                    session = await self._get_session()
+                    session = await self._get_session(url)
                     try:
                         async with session.get(url, headers=self.base_headers, timeout=15) as resp:
                             if resp.status == 200:
@@ -172,7 +184,7 @@ class FreeshotExtractor:
         body = ""
         ua = self.base_headers["User-Agent"]
         
-        session = await self._get_session()
+        session = await self._get_session(target_url)
         # Retry logic with exponential backoff for direct request
         last_error = None
         for attempt in range(self.MAX_RETRIES):

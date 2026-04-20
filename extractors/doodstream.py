@@ -73,6 +73,12 @@ class DoodStreamExtractor:
             "url": url,
             "maxTimeout": 60000,
         }
+        
+        # Determina dinamicamente il proxy per questo specifico URL
+        proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
+        if proxy:
+            payload["proxy"] = {"url": proxy}
+            logger.debug(f"DoodStream: Passing proxy to Byparr: {proxy}")
 
         async with aiohttp.ClientSession() as session:
             try:
