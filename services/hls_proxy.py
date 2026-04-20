@@ -45,6 +45,8 @@ from config import (
     APP_VERSION,
     ENABLE_WARP,
     ENABLE_REMUXING,
+    WARP_EXCLUDE_DOMAINS,
+    WARP_PROXY_URL,
 )
 from extractors.generic import GenericHLSExtractor, ExtractorError
 from services.manifest_rewriter import ManifestRewriter
@@ -362,8 +364,8 @@ class HLSProxy:
         """Periodically checks WARP status via Cloudflare trace (Universal)."""
         while True:
             try:
-                # We use the internal session to check the actual connection state
-                session = await self._get_session(url=key_url if 'key_url' in locals() else (stream_url if 'stream_url' in locals() else (url if 'url' in locals() else None)))
+                # We use the proxy session to check if the SOCKS5H proxy is working
+                session, _ = await self._get_proxy_session("https://www.cloudflare.com/cdn-cgi/trace")
                 async with session.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=5) as resp:
                     if resp.status == 200:
                         text = await resp.text()
@@ -565,6 +567,12 @@ class HLSProxy:
                     os.system(f"warp-cli --accept-tos tunnel host add {base_domain} > /dev/null 2>&1")
                     os.system(f"warp-cli --accept-tos tunnel host add {domain} > /dev/null 2>&1")
                     
+                    # In Proxy mode, we must also update the local exclusion list
+                    if base_domain not in WARP_EXCLUDE_DOMAINS:
+                        WARP_EXCLUDE_DOMAINS.append(base_domain)
+                    if domain not in WARP_EXCLUDE_DOMAINS:
+                        WARP_EXCLUDE_DOMAINS.append(domain)
+                    
                     BYPASSED_WARP_DOMAINS.add(domain)
                     BYPASSED_WARP_DOMAINS.add(base_domain)
                     time.sleep(1.0)
@@ -607,13 +615,22 @@ class HLSProxy:
             # Create new session and cache it
             logger.info(f"🌍 Creating proxy session: {proxy}")
             try:
+                # Gestione manuale di socks5h per compatibilità con aiohttp-socks
+                connector_url = proxy
+                rdns = True # Default per SOCKS5
+                if connector_url.startswith("socks5h://"):
+                    connector_url = connector_url.replace("socks5h://", "socks5://")
+                    rdns = True
+                    logger.debug(f"🕵️ SOCKS5h detected: forcing remote DNS resolution")
+
                 # Unlimited connections for maximum speed
                 connector = ProxyConnector.from_url(
-                    proxy,
+                    connector_url,
                     limit=0,  # Unlimited connections
                     limit_per_host=0,  # Unlimited per host
                     keepalive_timeout=60,  # Keep connections alive longer
                     family=socket.AF_INET,  # Force IPv4
+                    rdns=rdns,
                 )
                 timeout = ClientTimeout(total=30)
                 session = ClientSession(timeout=timeout, connector=connector)
@@ -1267,6 +1284,15 @@ class HLSProxy:
                 stream_url = result["destination_url"]
                 stream_headers = result.get("request_headers", {})
                 captured_manifest = result.get("captured_manifest")
+                warp_bypass = result.get("warp_bypass", False)
+
+                # Se l'estrattore richiede il bypass di WARP, aggiungiamo il flag all'URL
+                if warp_bypass:
+                    if "?" in stream_url:
+                        stream_url += "&direct=1"
+                    else:
+                        stream_url += "?direct=1"
+                    logger.info(f"⚡ WARP Bypass forced for this stream: {stream_url[:50]}...")
 
 
             # Se redirect_stream è False, restituisci il JSON con i dettagli (stile MediaFlow)
@@ -1770,6 +1796,8 @@ class HLSProxy:
 
             # Collect all query parameters to pass to the extractor
             extractor_kwargs = dict(request.query)
+            extractor_kwargs.pop('url', None) # Remove to avoid duplicate argument error
+            extractor_kwargs.pop('d', None)   # Remove to avoid duplicate argument error
             extractor_kwargs['request_headers'] = dict(request.headers)
 
             extractor = await self.get_extractor(
@@ -2313,9 +2341,15 @@ class HLSProxy:
                 )
             else:
                 session, session_proxy = await self._get_proxy_session(stream_url)
-                routing = "BYPASS (Real IP)" if any(d in stream_url for d in BYPASSED_WARP_DOMAINS) else "WARP (Cloudflare IP)"
+                
+                # ✅ FIX LOG: Determine correct routing for display
+                if session_proxy:
+                    routing = f"WARP (Cloudflare IP)" if session_proxy == WARP_PROXY_URL else f"PROXY ({session_proxy})"
+                else:
+                    routing = "BYPASS (Real IP)"
+                
                 logger.info(
-                    f"📡 [Proxy Stream] {routing} - Using session{f' via proxy {session_proxy}' if session_proxy else ' (direct)'} for: {stream_url}"
+                    f"📡 [Proxy Stream] {routing} - Using session (direct) for: {stream_url}"
                 )
             # Use standard aiohttp session
             resp_ctx = session.get(stream_url, headers=headers, ssl=not disable_ssl)

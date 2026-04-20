@@ -90,24 +90,46 @@ def parse_transport_routes() -> list:
     return routes
 
 def get_proxy_for_url(url: str, transport_routes: list, global_proxies: list) -> str:
-    """Trova il proxy appropriato per un URL basato su TRANSPORT_ROUTES"""
-    if not url or not transport_routes:
+    """Trova il proxy appropriato per un URL basato su TRANSPORT_ROUTES e impostazioni WARP."""
+    if not url:
         return random.choice(global_proxies) if global_proxies else None
 
-    # Cerca corrispondenze negli URL patterns
-    for route in transport_routes:
-        url_pattern = route['url']
-        if url_pattern in url:
-            proxy_value = route['proxy']
-            if proxy_value:
-                # Se è un singolo proxy, restituiscilo
-                return proxy_value
-            else:
-                # Se proxy è vuoto, usa connessione diretta
-                return None
+    # 0. Bypass esplicito tramite flag nell'URL (forzato da estrattori)
+    if "direct=1" in url or "warp=off" in url or "warp_bypass=1" in url:
+        return None
 
-    # Se non trova corrispondenza, usa global proxies
+    # 1. Cerca corrispondenze esplicite in TRANSPORT_ROUTES (massima priorità)
+    if transport_routes:
+        for route in transport_routes:
+            url_pattern = route['url']
+            if url_pattern in url:
+                proxy_value = route['proxy']
+                return proxy_value if proxy_value else None
+
+    # 2. Gestione WARP (se abilitato e non in modalità VPN di sistema)
+    if ENABLE_WARP:
+        # Controlla se l'URL deve essere escluso (bypass diretto)
+        if any(domain in url.lower() for domain in WARP_EXCLUDE_DOMAINS):
+            return None
+        return WARP_PROXY_URL
+
+    # 3. Se non trova corrispondenza e WARP è spento, usa global proxies
     return random.choice(global_proxies) if global_proxies else None
+
+def get_connector_for_proxy(proxy_url: str, **kwargs):
+    """Crea un ProxyConnector (aiohttp-socks) gestendo correttamente socks5h."""
+    from aiohttp_socks import ProxyConnector
+    if not proxy_url:
+        return None
+        
+    connector_url = proxy_url
+    rdns = kwargs.pop('rdns', False)
+    
+    if connector_url.startswith("socks5h://"):
+        connector_url = connector_url.replace("socks5h://", "socks5://")
+        rdns = True
+        
+    return ProxyConnector.from_url(connector_url, rdns=rdns, **kwargs)
 
 def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
     """Determina se SSL deve essere disabilitato per un URL basato su TRANSPORT_ROUTES"""
@@ -125,10 +147,9 @@ def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
 
 # --- WARP Configuration ---
 ENABLE_WARP = os.environ.get("ENABLE_WARP", "false").lower() == "true"
-
-# Configurazione proxy
-GLOBAL_PROXIES = parse_proxies('GLOBAL_PROXY')
-TRANSPORT_ROUTES = parse_transport_routes()
+WARP_PROXY_URL = "socks5h://127.0.0.1:1080"
+# Domini da escludere da WARP (bypass diretto tramite IP reale del VPS)
+WARP_EXCLUDE_DOMAINS = ["cinemacity.cc", "cccdn.net", "vavoo", "lokke.app", "mediahubmx"]
 
 # Configurazione proxy
 GLOBAL_PROXIES = parse_proxies('GLOBAL_PROXY')
@@ -148,7 +169,7 @@ MAX_RECORDING_DURATION = int(os.environ.get("MAX_RECORDING_DURATION", 28800))  #
 RECORDINGS_RETENTION_DAYS = int(os.environ.get("RECORDINGS_RETENTION_DAYS", 7))  # Auto-cleanup after 7 days
 
 # --- Version/Mode Configuration ---
-APP_VERSION = "2.5.19"
+APP_VERSION = "2.5.24"
 
 # Detect if we are running in Full or Light mode
 _has_solvers = os.path.exists("flaresolverr") and (os.path.exists("byparr") or os.path.exists("byparr_src"))
