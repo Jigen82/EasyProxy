@@ -1283,7 +1283,7 @@ class HLSProxy:
             if hls_sid and hls_sid in self.hls_header_sessions:
                 logger.info(f"📁 Using HLS header session: {hls_sid}")
                 combined_headers.update(self.hls_header_sessions[hls_sid])
-                logger.info(
+                logger.debug(
                     "🧪 [hls sid debug] phase=load sid=%s %s",
                     hls_sid,
                     self._debug_header_snapshot(self.hls_header_sessions[hls_sid]),
@@ -1399,7 +1399,7 @@ class HLSProxy:
                     current_hls_sid = f"sid_{int(time.time())}_{random.getrandbits(16)}"
                     self.hls_header_sessions[current_hls_sid] = stream_headers
                     logger.info(f"🆕 Created HLS header session: {current_hls_sid}")
-                    logger.info(
+                    logger.debug(
                         "🧪 [hls sid debug] phase=create-manifest sid=%s %s",
                         current_hls_sid,
                         self._debug_header_snapshot(stream_headers),
@@ -1902,7 +1902,7 @@ class HLSProxy:
                 hls_sid = f"sid_{int(time.time())}_{random.getrandbits(16)}"
                 self.hls_header_sessions[hls_sid] = stream_headers
                 logger.info(f"🆕 Created HLS header session in extractor: {hls_sid}")
-                logger.info(
+                logger.debug(
                     "🧪 [hls sid debug] phase=create-extractor sid=%s %s",
                     hls_sid,
                     self._debug_header_snapshot(stream_headers),
@@ -2457,7 +2457,7 @@ class HLSProxy:
                 )
 
             if is_cccdn_stream:
-                logger.info(
+                logger.debug(
                     "🧪 [cccdn debug] phase=pre-fetch path=%s manifest=%s referer=%s origin=%s cookie_count=%s ua=%s range=%s sid=%s",
                     request.path,
                     ".m3u8" in stream_url.lower() or ".mpd" in stream_url.lower(),
@@ -2537,7 +2537,7 @@ class HLSProxy:
                     # se curl_cffi diretto dovesse dare ancora 403.
                     is_manifest = ".m3u8" in final_curl_url.lower() or ".mpd" in final_curl_url.lower()
                     if is_cccdn_stream:
-                        logger.info(
+                        logger.debug(
                             "🧪 [cccdn debug] phase=curl-request manifest=%s referer=%s origin=%s cookie_count=%s ua=%s sec_fetch_site=%s url=%s",
                             is_manifest,
                             curl_headers.get("Referer", "-"),
@@ -2610,7 +2610,7 @@ class HLSProxy:
                                 async def __aexit__(self, *args): pass
                             
                             # ✅ DEBUG: Vediamo cosa ci restituisce il fallback
-                            logger.info(f"🔍 [Fallback Debug] Cookies received: {sr_result.get('cookies')}")
+                            logger.debug(f"🔍 [Fallback Debug] Cookies received: {sr_result.get('cookies')}")
                             
                             # ✅ CRITICAL: Aggiorna la sessione con i cookie freschi sbloccati
                             target_sid = request.query.get("hls_sid")
@@ -2639,7 +2639,7 @@ class HLSProxy:
                         resp_ctx = MockResp(curl_resp)
                         goto_manifest_processing = True
                     if is_cccdn_stream:
-                        logger.info(
+                        logger.debug(
                             "🧪 [cccdn debug] phase=curl-response status=%s manifest=%s final_url=%s",
                             curl_resp.status_code,
                             is_manifest,
@@ -2662,7 +2662,7 @@ class HLSProxy:
                     error_body = await resp.read()
                     routing = "WARP" if session_proxy == WARP_PROXY_URL else ("BYPASS" if session_proxy is None else "PROXY")
                     if is_cccdn_stream:
-                        logger.warning(
+                        logger.debug(
                             "🧪 [cccdn debug] phase=response-error status=%s path=%s referer=%s origin=%s cookie_count=%s content_type=%s url=%s",
                             resp.status,
                             request.path,
@@ -2725,7 +2725,7 @@ class HLSProxy:
                         current_hls_sid = f"sid_{int(time.time())}_{random.getrandbits(16)}"
                         self.hls_header_sessions[current_hls_sid] = headers
                         logger.info(f"🆕 Created HLS header session in proxy: {current_hls_sid}")
-                        logger.info(
+                        logger.debug(
                             "🧪 [hls sid debug] phase=create-proxy sid=%s %s",
                             current_hls_sid,
                             self._debug_header_snapshot(headers),
