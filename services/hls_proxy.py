@@ -2111,7 +2111,7 @@ class HLSProxy:
             # ✅ Use pooled session for better performance
             # The session already has the proxy configured in its connector
             if self._should_force_direct_from_query(request):
-                session = await self._get_session(url=key_url if 'key_url' in locals() else (stream_url if 'stream_url' in locals() else (url if 'url' in locals() else None)))
+                session = await self._get_session(url=key_url)
                 proxy_used = None
                 logger.info("Using direct session for AES key request (forced)")
             else:
@@ -2404,7 +2404,7 @@ class HLSProxy:
 
             # ✅ Use pooled session for better performance
             if self._should_force_direct_from_query(request):
-                session = await self._get_session(url=key_url if 'key_url' in locals() else (stream_url if 'stream_url' in locals() else (url if 'url' in locals() else None)))
+                session = await self._get_session(url=stream_url)
                 session_proxy = None
                 logger.info(
                     f"[Proxy Stream] Using direct session (forced) for: {stream_url}"

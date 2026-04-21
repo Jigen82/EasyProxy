@@ -271,7 +271,7 @@ class VixSrcExtractor:
             text_content = getattr(response, 'text', '')
             payload = getattr(response, 'json_content', None) or json.loads(text_content)
         except (json.JSONDecodeError, TypeError, AttributeError) as exc:
-            preview = text_content[:200] if 'text_content' in locals() else "N/A"
+            preview = text_content[:200] if text_content else "N/A"
             logger.error(f"❌ VixSrc API JSON Error. Response starts with: {preview}")
             raise ExtractorError(f"Invalid API response from {api_url}: {exc}")
 

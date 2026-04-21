@@ -198,16 +198,19 @@ class CinemaCityExtractor:
                 try:
                     file_data = json.loads(decoded)
                     if file_data: break
-                except: pass
+                except json.JSONDecodeError:
+                    pass
             
             raw_json = self.extract_json_array(decoded)
             if raw_json:
                 try:
                     clean = re.sub(r'\\(.)', r'\1', raw_json)
                     file_data = json.loads(clean)
-                except:
-                    try: file_data = json.loads(raw_json)
-                    except: pass
+                except json.JSONDecodeError:
+                    try:
+                        file_data = json.loads(raw_json)
+                    except json.JSONDecodeError:
+                        pass
                 if file_data: break
             
             file_match = re.search(r'(?:file|sources)\s*:\s*["\'](.*?)["\']', decoded, re.I)
