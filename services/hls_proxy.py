@@ -2239,6 +2239,7 @@ class HLSProxy:
         """✅ NUOVO: Proxy dedicato per segmenti .ts con Content-Disposition"""
         try:
             headers = dict(stream_headers)
+            is_cccdn_stream = "cccdn.net" in segment_url
 
             def set_response_header(target: dict, name: str, value: str):
                 keys_to_remove = [k for k in target.keys() if k.lower() == name.lower()]
@@ -2251,18 +2252,18 @@ class HLSProxy:
                 if header in request.headers:
                     headers[header] = request.headers[header]
 
+            if is_cccdn_stream:
+                headers["Accept-Encoding"] = "identity"
+
             # ✅ Use pooled session for better performance
             session, _ = await self._get_proxy_session(segment_url)
             # ✅ Use yarl.URL with encoded=True to prevent double-encoding of commas
             final_segment_url = yarl.URL(segment_url, encoded=True)
             async with session.get(final_segment_url, headers=headers) as resp:
-                content_bytes = await resp.read()
-                content_bytes = self._strip_fake_png_header_from_ts(content_bytes)
                 response_headers = {}
 
                 for header in [
                     "content-type",
-                    "content-length",
                     "content-range",
                     "accept-ranges",
                     "last-modified",
@@ -2292,15 +2293,22 @@ class HLSProxy:
                     "Range, Content-Type",
                 )
 
-                set_response_header(
-                    response_headers, "Content-Length", str(len(content_bytes))
-                )
+                response = web.StreamResponse(status=resp.status, headers=response_headers)
+                await response.prepare(request)
 
-                return web.Response(
-                    body=content_bytes,
-                    status=resp.status,
-                    headers=response_headers,
-                )
+                first_chunk = True
+                try:
+                    async for chunk in resp.content.iter_any():
+                        if first_chunk:
+                            chunk = self._strip_fake_png_header_from_ts(chunk)
+                            first_chunk = False
+                        await response.write(chunk)
+                    await response.write_eof()
+                    return response
+                except Exception as e:
+                    if "Connection lost" not in str(e) and "closing transport" not in str(e):
+                        logger.error(f"Error streaming segment {segment_name}: {str(e)}")
+                    return response
 
         except Exception as e:
             logger.error(f"Error in segment proxy: {str(e)}")
@@ -2379,6 +2387,20 @@ class HLSProxy:
 
             # ✅ NUOVO: Determina se disabilitare SSL per questo dominio
             disable_ssl = get_ssl_setting_for_url(stream_url, TRANSPORT_ROUTES)
+            is_cccdn_stream = "cccdn.net" in stream_url
+
+            if is_cccdn_stream:
+                headers["Accept-Encoding"] = "identity"
+
+            def _cookie_summary(value: str | None) -> str:
+                if not value:
+                    return "0"
+                return str(len([part for part in value.split(";") if part.strip()]))
+
+            def _short_url(value: str, limit: int = 120) -> str:
+                if len(value) <= limit:
+                    return value
+                return value[:limit] + "..."
 
             # ✅ Use pooled session for better performance
             if self._should_force_direct_from_query(request):
@@ -2399,9 +2421,9 @@ class HLSProxy:
                 logger.info(
                     f"📡 [Proxy Stream] {routing} - Using session (direct) for: {stream_url}"
                 )
-            
+
             # --- PROTECTED DOMAINS FALLBACK: curl_cffi ---
-            if HAS_CURL_CFFI and any(d in stream_url for d in ["cccdn.net", "cinemacity.cc", "torrentio", "strem.fun"]):
+            if HAS_CURL_CFFI and (not is_cccdn_stream) and any(d in stream_url for d in ["cinemacity.cc", "torrentio", "strem.fun"]):
                 logger.info(f"🚀 [curl_cffi] Using browser impersonation for: {stream_url}")
                 try:
                     # Use a pooled curl session if available
@@ -2419,11 +2441,23 @@ class HLSProxy:
                     if "user-agent" in curl_headers:
                         del curl_headers["user-agent"]
                     
-                    # ✅ FIX: Ensure Referer is set to ROOT for cccdn.net
-                    # Some CDNs prefer the base domain over the full page URL
+                    # Preserve extractor-provided Referer for cccdn.net.
+                    # Some streams require the exact movie page, not the site root.
                     if "cccdn.net" in stream_url:
-                        curl_headers["Referer"] = "https://cinemacity.cc/"
-                        curl_headers["Origin"] = "https://cinemacity.cc"
+                        referer_value = (
+                            curl_headers.get("Referer")
+                            or curl_headers.get("referer")
+                            or "https://cinemacity.cc/"
+                        )
+                        curl_headers["Referer"] = referer_value
+                        try:
+                            parsed_referer = urllib.parse.urlparse(referer_value)
+                            if parsed_referer.scheme and parsed_referer.netloc:
+                                curl_headers["Origin"] = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+                            else:
+                                curl_headers["Origin"] = "https://cinemacity.cc"
+                        except Exception:
+                            curl_headers["Origin"] = "https://cinemacity.cc"
                         curl_headers["Sec-Fetch-Site"] = "same-site"
                         curl_headers["Sec-Fetch-Mode"] = "cors"
                         curl_headers["Sec-Fetch-Dest"] = "empty"
@@ -2455,7 +2489,6 @@ class HLSProxy:
                     # ✅ NUOVO: Se è un manifest, proviamo a usare smart_request come fallback
                     # se curl_cffi diretto dovesse dare ancora 403.
                     is_manifest = ".m3u8" in final_curl_url.lower() or ".mpd" in final_curl_url.lower()
-                    
                     curl_resp = await curl_s.get(
                         final_curl_url, 
                         headers=curl_headers, 
@@ -2465,6 +2498,16 @@ class HLSProxy:
                         stream=True,
                         allow_redirects=True
                     )
+                    target_sid = request.query.get("hls_sid")
+                    if is_manifest and target_sid and target_sid in self.hls_header_sessions:
+                        try:
+                            curl_cookies = curl_resp.cookies.get_dict()
+                            if curl_cookies:
+                                fresh_cookies_str = "; ".join([f"{k}={v}" for k, v in curl_cookies.items()])
+                                self.hls_header_sessions[target_sid]["Cookie"] = fresh_cookies_str
+                                logger.info(f"🔄 [Cookie Sync] Session {target_sid} updated from curl_cffi with {len(curl_cookies)} cookies")
+                        except Exception as ce:
+                            logger.error(f"❌ Failed to sync curl_cffi cookies: {ce}")
                     
                     class MockContent:
                         def __init__(self, c_resp): self.c_resp = c_resp
@@ -2507,18 +2550,26 @@ class HLSProxy:
                                 async def __aenter__(self): return self
                                 async def __aexit__(self, *args): pass
                             
+                            # ✅ DEBUG: Vediamo cosa ci restituisce il fallback
+                            # ✅ CRITICAL: Aggiorna la sessione con i cookie freschi sbloccati
+                            target_sid = request.query.get("hls_sid")
+                            fresh_cookies = sr_result.get("cookies")
+                            
+                            if target_sid and target_sid in self.hls_header_sessions:
+                                if fresh_cookies:
+                                    try:
+                                        fresh_cookies_str = "; ".join([f"{k}={v}" for k, v in fresh_cookies.items()])
+                                        # Mergiamo con i vecchi cookie se possibile
+                                        old_cookies = self.hls_header_sessions[target_sid].get("Cookie", "")
+                                        self.hls_header_sessions[target_sid]["Cookie"] = fresh_cookies_str
+                                        logger.info(f"🔄 [Cookie Sync] Session {target_sid} updated with {len(fresh_cookies)} fresh cookies")
+                                    except Exception as ce:
+                                        logger.error(f"❌ Failed to sync cookies: {ce}")
+                                else:
+                                    logger.warning(f"⚠️ [Cookie Sync] No cookies found in sr_result for {target_sid}")
+                            
                             resp_ctx = MockSRResp(sr_result["html"])
                             goto_manifest_processing = True
-
-                            # ✅ CRITICAL: Aggiorna la sessione con i cookie freschi sbloccati
-                            # Questo permetterà ai segmenti .ts successivi di funzionare!
-                            if hls_sid and hls_sid in self.header_sessions and sr_result.get("cookies"):
-                                try:
-                                    fresh_cookies_str = "; ".join([f"{k}={v}" for k, v in sr_result["cookies"].items()])
-                                    self.header_sessions[hls_sid]["Cookie"] = fresh_cookies_str
-                                    logger.info(f"🔄 [Cookie Sync] Session {hls_sid} updated with fresh cookies from fallback")
-                                except Exception as ce:
-                                    logger.error(f"❌ Failed to sync cookies: {ce}")
                         else:
                             # Fallback failed too, use original curl_resp
                             resp_ctx = MockResp(curl_resp)

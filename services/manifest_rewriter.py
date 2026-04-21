@@ -319,6 +319,98 @@ class ManifestRewriter:
                 rewritten_lines.append(proxy_variant_url)
                 return "\n".join(rewritten_lines)
 
+        # Generic master-playlist optimization: keep only the highest-bandwidth
+        # video variant, while preserving audio/media tags and other metadata.
+        generic_streams = []
+        for i, line in enumerate(lines):
+            if line.startswith("#EXT-X-STREAM-INF:") and i + 1 < len(lines):
+                bandwidth_match = re.search(r"BANDWIDTH=(\d+)", line)
+                bandwidth = int(bandwidth_match.group(1)) if bandwidth_match else 0
+                generic_streams.append(
+                    {
+                        "index": i,
+                        "bandwidth": bandwidth,
+                        "inf": line,
+                        "url": lines[i + 1],
+                    }
+                )
+
+        if generic_streams:
+            highest_quality_stream = max(generic_streams, key=lambda x: x["bandwidth"])
+            logger.debug(
+                "Generic HLS: selected max bandwidth %s.",
+                highest_quality_stream["bandwidth"],
+            )
+
+            if hls_sid:
+                header_params = f"&hls_sid={hls_sid}"
+            else:
+                header_params = "".join(
+                    [
+                        f"&h_{urllib.parse.quote(key, safe='')}={urllib.parse.quote(str(value), safe='')}"
+                        for key, value in stream_headers.items()
+                    ]
+                )
+
+            if api_password:
+                header_params += f"&api_password={api_password}"
+
+            absolute_variant_url = urljoin(base_url, highest_quality_stream["url"])
+            if shorten_url_func:
+                url_id = await shorten_url_func(absolute_variant_url)
+                proxy_variant_url = f"{proxy_base}/proxy/hls/manifest.m3u8?hls_url_id={url_id}{header_params}"
+            else:
+                encoded_variant_url = urllib.parse.quote(absolute_variant_url, safe="")
+                proxy_variant_url = (
+                    f"{proxy_base}/proxy/hls/manifest.m3u8?d={encoded_variant_url}{header_params}"
+                )
+
+            proxied_media_lines = []
+            for line in lines:
+                if not line.startswith("#EXT-X-MEDIA:") or 'URI="' not in line:
+                    continue
+
+                uri_start = line.find('URI="') + 5
+                uri_end = line.find('"', uri_start)
+                if uri_start <= 4 or uri_end <= uri_start:
+                    proxied_media_lines.append(line.strip())
+                    continue
+
+                media_url = urljoin(base_url, line[uri_start:uri_end])
+                if shorten_url_func:
+                    url_id = await shorten_url_func(media_url)
+                    proxy_media_url = f"{proxy_base}/proxy/hls/manifest.m3u8?hls_url_id={url_id}{header_params}"
+                else:
+                    encoded_media_url = urllib.parse.quote(media_url, safe="")
+                    proxy_media_url = (
+                        f"{proxy_base}/proxy/hls/manifest.m3u8?d={encoded_media_url}{header_params}"
+                    )
+                proxied_media_lines.append(line[:uri_start] + proxy_media_url + line[uri_end:])
+
+            rewritten_lines.append("#EXTM3U")
+            skip_next_url = False
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if skip_next_url:
+                    skip_next_url = False
+                    continue
+                if i == highest_quality_stream["index"]:
+                    continue
+                if any(stream["index"] == i for stream in generic_streams):
+                    skip_next_url = True
+                    continue
+                if stripped.startswith("#EXT-X-MEDIA:"):
+                    continue
+                if stripped == "#EXTM3U":
+                    continue
+                rewritten_lines.append(stripped)
+
+            rewritten_lines.extend([line for line in proxied_media_lines if line])
+            rewritten_lines.append(highest_quality_stream["inf"])
+            rewritten_lines.append(proxy_variant_url)
+
+            return "\n".join(rewritten_lines)
+
         # --- Logica Standard ---
         if hls_sid:
             header_params = f"&hls_sid={hls_sid}"

@@ -4,6 +4,7 @@ import asyncio
 from typing import Optional, Dict, Any
 from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES, get_connector_for_proxy
 from aiohttp_socks import ProxyConnector
+import yarl
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,10 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
     # 1. Tentativo Diretto (aiohttp)
     try:
         connector = get_connector_for_proxy(proxy)
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession(
+            connector=connector,
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        ) as session:
             method = session.get if cmd.lower() == "request.get" else session.post
             async with method(url, headers=headers, data=post_data, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status == 200:
@@ -51,7 +55,12 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
                     if not any(marker in content.lower() for marker in CF_MARKERS):
                         # Se è JSON, lo mettiamo comunque in 'html' come stringa o lo lasciamo gestire all'estrattore
                         # Per compatibilità, restituiamo sempre il dizionario
-                        return {"html": content, "cookies": {}}
+                        response_url = yarl.URL(str(resp.url))
+                        jar_cookies = session.cookie_jar.filter_cookies(response_url)
+                        cookies = {name: morsel.value for name, morsel in jar_cookies.items()}
+                        for name, morsel in resp.cookies.items():
+                            cookies[name] = morsel.value
+                        return {"html": content, "cookies": cookies}
                 elif resp.status in (403, 503):
                     logger.warning(f"SmartRequest (aiohttp): HTTP {resp.status} per {url}, provo curl_cffi...")
     except Exception as e:
@@ -87,11 +96,22 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
 
     logger.info(f"SmartRequest: Uso FlareSolverr per {url}")
     endpoint = f"{FLARESOLVERR_URL.rstrip('/')}/v1"
+    
+    # ✅ FIX: Estrai i cookie dagli header per passarli a FlareSolverr
+    fs_cookies = []
+    cookie_header = headers.get("Cookie") or headers.get("cookie")
+    if cookie_header:
+        for cookie_item in cookie_header.split(";"):
+            if "=" in cookie_item:
+                k, v = cookie_item.strip().split("=", 1)
+                fs_cookies.append({"name": k, "value": v})
+
     payload = {
         "cmd": cmd,
         "url": url,
         "maxTimeout": (FLARESOLVERR_TIMEOUT + 60) * 1000,
     }
+    if fs_cookies: payload["cookies"] = fs_cookies
     if post_data: payload["postData"] = post_data
     if proxy:
         payload["proxy"] = {"url": proxy}
@@ -108,11 +128,17 @@ async def smart_request(cmd: str, url: str, headers: Optional[Dict] = None, post
                     if data.get("status") == "ok":
                         solution = data.get("solution", {})
                         cookies_list = solution.get("cookies", [])
+                        
+                        # ✅ DEBUG: Vediamo cosa risponde esattamente FlareSolverr
+                        logger.debug(f"🚀 FlareSolverr solution cookies: {len(cookies_list)}")
+                        
                         cookies_dict = {c["name"]: c["value"] for c in cookies_list}
                         return {
                             "html": solution.get("response", ""),
                             "cookies": cookies_dict
                         }
+                    else:
+                        logger.warning(f"SmartRequest: FlareSolverr ha risposto con errore: {data.get('message')}")
         except Exception as e:
             logger.error(f"SmartRequest: FlareSolverr fallito: {e}")
 
