@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import random
 import re
 import sys
 import os
+import time
 import socket
 import urllib.parse
 from urllib.parse import urlparse, urljoin
@@ -1370,7 +1372,6 @@ class HLSProxy:
                     text=rewritten_manifest,
                     headers={
                         "Content-Type": "application/vnd.apple.mpegurl",
-                        "Content-Disposition": 'attachment; filename="stream.m3u8"',
                         "Access-Control-Allow-Origin": "*",
                         "Cache-Control": "no-cache",
                     },
@@ -2592,7 +2593,6 @@ class HLSProxy:
                     )
                     return web.Response(text=rewritten, headers={
                         "Content-Type": "application/vnd.apple.mpegurl",
-                        "Content-Disposition": 'attachment; filename="stream.m3u8"',
                         "Access-Control-Allow-Origin": "*",
                         "Cache-Control": "no-cache",
                     })
@@ -2680,7 +2680,6 @@ class HLSProxy:
                                 text=hls_playlist,
                                 headers={
                                     "Content-Type": "application/vnd.apple.mpegurl",
-                                    "Content-Disposition": 'attachment; filename="stream.m3u8"',
                                     "Access-Control-Allow-Origin": "*",
                                     "Cache-Control": "no-cache",
                                 },
