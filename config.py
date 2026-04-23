@@ -123,7 +123,9 @@ def get_proxy_for_url(url: str, transport_routes: list, global_proxies: list) ->
         proxy = random.choice(global_proxies) if global_proxies else None
         return proxy if is_proxy_alive(proxy) else None
 
-    if "direct=1" in url or "warp=off" in url or "warp_bypass=1" in url:
+    normalized_url = url.lower()
+
+    if any(domain in normalized_url for domain in WARP_EXCLUDE_DOMAINS):
         return None
 
     if transport_routes:
@@ -170,8 +172,22 @@ def get_solver_proxy_url(proxy_url: str | None) -> str | None:
 
 def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
     """Determina se SSL deve essere disabilitato per un URL basato su TRANSPORT_ROUTES."""
+    normalized_url = (url or "").lower()
+
+    if "disable_ssl=1" in normalized_url:
+        return True
+
     if not url or not transport_routes:
-        return False
+        return any(
+            domain in normalized_url
+            for domain in ("vavoo.to", "vavoo.tv", "lokke.app", "mediahubmx")
+        )
+
+    if any(
+        domain in normalized_url
+        for domain in ("vavoo.to", "vavoo.tv", "lokke.app", "mediahubmx")
+    ):
+        return True
 
     for route in transport_routes:
         url_pattern = route["url"]
@@ -182,26 +198,40 @@ def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
 
 
 ENABLE_WARP = os.environ.get("ENABLE_WARP", "false").lower() == "true"
+WARP_PROXY_URL = os.environ.get("WARP_PROXY_URL", "").strip() or None
 
 _default_warp_exclude_domains = [
     "cinemacity.cc",
+    "*.cinemacity.cc",
     "cccdn.net",
+    "*.cccdn.net",
     "strem.fun",
+    "*.strem.fun",
+    "torrentio.strem.fun",
     "real-debrid.com",
+    "*.real-debrid.com",
     "realdebrid.com",
+    "*.realdebrid.com",
     "api.real-debrid.com",
     "premiumize.me",
+    "*.premiumize.me",
     "www.premiumize.me",
     "alldebrid.com",
+    "*.alldebrid.com",
     "api.alldebrid.com",
     "debrid-link.com",
+    "*.debrid-link.com",
     "debridlink.com",
+    "*.debridlink.com",
     "api.debrid-link.com",
     "torbox.app",
+    "*.torbox.app",
     "api.torbox.app",
     "offcloud.com",
+    "*.offcloud.com",
     "api.offcloud.com",
     "put.io",
+    "*.put.io",
     "api.put.io",
 ]
 WARP_EXCLUDE_DOMAINS = [
@@ -228,7 +258,7 @@ MAX_RECORDING_DURATION = int(os.environ.get("MAX_RECORDING_DURATION", 28800))
 RECORDINGS_RETENTION_DAYS = int(os.environ.get("RECORDINGS_RETENTION_DAYS", 7))
 
 # --- Version/Mode Configuration ---
-APP_VERSION = "2.5.76"
+APP_VERSION = "2.5.82"
 
 _has_solvers = os.path.exists("flaresolverr") and (
     os.path.exists("byparr") or os.path.exists("byparr_src")

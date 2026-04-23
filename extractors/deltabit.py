@@ -25,7 +25,7 @@ settings = Settings()
 class DeltabitExtractor:
     """
     Deltabit extractor using FlareSolverr for Cloudflare bypass and session caching.
-    Supports safego.cc redirection and unifies FlareSolverr sessions for speed.
+    Supports safego.cc/clicka.cc redirection and unifies FlareSolverr sessions for speed.
     """
 
     def __init__(self, request_headers: dict = None, proxies: list = None):
@@ -83,9 +83,9 @@ class DeltabitExtractor:
     async def extract(self, url: str, **kwargs) -> dict:
         """Extract Deltabit URL using a unified FlareSolverr session if needed."""
         
-        # 1. Handle safego.cc wrapper first (it uses its own session but returns the target URL)
-        if "safego.cc" in url:
-            url = await self._solve_safego(url)
+        # 1. Handle redirectors (safego.cc, clicka.cc, etc.)
+        if any(d in url.lower() for d in ["safego.cc", "clicka.cc", "clicka"]):
+            url = await self._solve_redirector(url)
 
         # 2. Normalize URL to embed format
         if "/e/" not in url:
@@ -174,9 +174,9 @@ class DeltabitExtractor:
                 except:
                     pass
 
-    async def _solve_safego(self, url: str) -> str:
-        """Solves safego.cc captcha and returns the destination URL using FS sessions."""
-        logger.debug(f"Deltabit: Solving safego.cc wrapper via FlareSolverr session: {url}")
+    async def _solve_redirector(self, url: str) -> str:
+        """Solves safego.cc or clicka.cc redirectors and returns the destination URL using FS sessions."""
+        logger.debug(f"Deltabit: Solving redirector via FlareSolverr session: {url}")
         
         session_id = None
         try:
@@ -202,7 +202,7 @@ class DeltabitExtractor:
                 
                 ocr = ddddocr.DdddOcr(show_ad=False)
                 res_captcha = ocr.classification(img_data)
-                logger.debug(f"Deltabit: Solved safego.cc captcha: {res_captcha}")
+                logger.debug(f"Deltabit: Solved redirector captcha: {res_captcha}")
                 
                 post_data = urlencode({"captch5": res_captcha, "submit": "Continue"})
                 
@@ -230,7 +230,7 @@ class DeltabitExtractor:
                     new_url = proceed_link["href"]
                     if new_url.startswith("/"):
                         new_url = urljoin(current_url, new_url)
-                    logger.debug(f"Deltabit: Resolved safego.cc -> {new_url}")
+                    logger.debug(f"Deltabit: Resolved redirector -> {new_url}")
                     return new_url
                 
                 meta_refresh = soup.find("meta", attrs={"http-equiv": re.compile(r'refresh', re.I)})
@@ -249,7 +249,7 @@ class DeltabitExtractor:
             return current_url
 
         except Exception as e:
-            logger.error(f"Deltabit: safego.cc solver error: {e}")
+            logger.error(f"Deltabit: redirector solver error: {e}")
             return url
         finally:
             if session_id:
