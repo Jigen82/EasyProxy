@@ -130,7 +130,7 @@ docker run -d --name easyproxy --cap-add=NET_ADMIN --device /dev/net/tun -e ENAB
 > If you are deploying on **HuggingFace Spaces**, WARP cannot be used due to security restrictions. Set `ENABLE_WARP=false` in your environment variables.
 
 > [!IMPORTANT]
-> If a provider has issues behind WARP, do not use query params like `direct=1`, `warp=off`, or `warp_bypass=1`.
+> If a provider has issues behind WARP, configure the host in `WARP_EXCLUDED_HOSTS`.
 > With WARP running as a VPN tunnel, bypass must be configured through the `WARP_EXCLUDED_HOSTS` environment variable so the host exits with the server real IP.
 > Example:
 > `WARP_EXCLUDED_HOSTS=cinemacity.cc,cccdn.net,strem.fun,torrentio.strem.fun,problem-host.example`

@@ -1369,12 +1369,7 @@ class HLSProxy:
                 stream_url = result["destination_url"]
                 stream_headers = result.get("request_headers", {})
                 captured_manifest = result.get("captured_manifest")
-                warp_bypass = result.get("warp_bypass", False)
                 force_disable_ssl = result.get("disable_ssl", False)
-
-                # Se l'estrattore richiede il bypass di WARP, aggiungiamo il flag all'URL
-                if warp_bypass:
-                    logger.info(f"⚡ WARP Bypass requested for this stream: {stream_url[:50]}...")
 
                 if force_disable_ssl:
                     if "?" in stream_url:
