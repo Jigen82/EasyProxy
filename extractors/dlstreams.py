@@ -303,9 +303,13 @@ class DLStreamsExtractor:
             logger.debug("DLStreams browser session capture starting for %s", channel_key)
             try:
                 browser = await self._get_browser()
+                # Define a real-looking User-Agent to avoid 'Headless' detection
+                user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+                
                 context = await browser.new_context(
-                    user_agent=self.base_headers["User-Agent"],
+                    user_agent=user_agent,
                     viewport={"width": 1366, "height": 768},
+                    device_scale_factor=1,
                 )
                 try:
                     await context.route(
