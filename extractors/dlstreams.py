@@ -94,13 +94,30 @@ class DLStreamsExtractor:
         async with self._browser_launch_lock:
             if self._browser:
                 return self._browser
+            
+            import os
+            chrome_path = os.getenv("CHROME_BIN") or os.getenv("CHROME_EXE_PATH")
+            logger.debug(f"DLStreams initialization - CHROME_BIN: {os.getenv('CHROME_BIN')}, CHROME_EXE_PATH: {os.getenv('CHROME_EXE_PATH')}")
+            
+            if chrome_path and os.path.exists(chrome_path):
+                logger.info(f"DLStreams using browser path: {chrome_path}")
+                executable_path = chrome_path
+            else:
+                logger.warning(f"DLStreams could not find system Chromium at {chrome_path}, falling back to default")
+                executable_path = None
+
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=False,
+                executable_path=executable_path,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
                     "--autoplay-policy=no-user-gesture-required",
+                    "--disable-web-security",
+                    "--disable-features=IsolateOrigins,site-per-process",
                 ],
             )
         return self._browser
@@ -304,32 +321,41 @@ class DLStreamsExtractor:
                     async def on_response(response):
                         nonlocal manifest_text
                         try:
-                            if (
-                                response.url.endswith(f"/proxy/wind/{channel_key}/mono.css")
-                                or f"/proxy/top1/cdn/{channel_key}/mono.css" in response.url
-                                or f"/proxy/" in response.url and f"/{channel_key}/mono.css" in response.url
-                            ) and response.status == 200:
+                            # Catch any EXTM3U manifest from a proxy-style URL
+                            is_manifest_candidate = "/proxy/" in response.url and channel_key in response.url
+                            
+                            if is_manifest_candidate and response.status == 200:
                                 body = await response.body()
                                 decoded = body.decode("utf-8", errors="ignore")
                                 if decoded.lstrip().startswith("#EXTM3U"):
                                     manifest_text = decoded
                                     self.stream_origin = self._origin_of(response.url)
+                                    logger.debug(f"DLStreams captured manifest from: {response.url}")
+                            
                             if "/key/" in response.url and response.status == 200:
                                 body = await response.body()
                                 self._browser_key_cache[response.url] = body
                                 self.stream_origin = self._origin_of(response.url)
+                                logger.debug(f"DLStreams captured key from: {response.url}")
                         except Exception as exc:
                             logger.debug("DLStreams browser capture hook failed for %s: %s", response.url, exc)
 
                     context.on("response", on_response)
-                    await page.goto(resolved_player_url, wait_until="domcontentloaded", timeout=30000)
+                    await page.goto(resolved_player_url, wait_until="load", timeout=30000)
+                    
+                    # Small interaction to trigger player/manifest generation
+                    try:
+                        await page.mouse.click(683, 384) # Click center of 1366x768
+                        await page.wait_for_timeout(2000)
+                    except:
+                        pass
 
-                    deadline = time.time() + 25
+                    deadline = time.time() + 35
                     while time.time() < deadline:
                         has_key = any("/key/" in key for key in self._browser_key_cache)
                         if manifest_text and has_key:
                             break
-                        await page.wait_for_timeout(250)
+                        await page.wait_for_timeout(500)
 
                     if manifest_text:
                         self._last_working_player[channel_id] = resolved_player_url
