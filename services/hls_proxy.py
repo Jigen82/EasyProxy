@@ -622,7 +622,7 @@ class HLSProxy:
         except Exception as e:
             logging.error(f"❌ Error in dynamic WARP bypass: {e}")
 
-    async def _get_proxy_session(self, url: str, bypass_warp: bool = False):
+    async def _get_proxy_session(self, url: str, bypass_warp: bool = False, forced_proxy: str | None = None):
         """Get a session with proxy support for the given URL.
 
         Sessions are cached and reused for the same proxy to improve performance.
@@ -634,7 +634,7 @@ class HLSProxy:
         # Trigger dynamic bypass check before getting proxy settings
         self._check_dynamic_warp_bypass(url, force=bypass_warp)
         
-        proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, GLOBAL_PROXIES, bypass_warp=bypass_warp)
+        proxy = forced_proxy or get_proxy_for_url(url, TRANSPORT_ROUTES, GLOBAL_PROXIES, bypass_warp=bypass_warp)
 
         prefer_default_family = "ai.the-sunmoon.site/key/" in url
 
@@ -755,7 +755,13 @@ class HLSProxy:
                 key = f"{host}_direct" if bypass_warp else host
                 
                 # ✅ FIX: Calcola il proxy corretto in base a bypass_warp invece di usare GLOBAL_PROXIES indiscriminatamente
-                proxy = get_proxy_for_url(host, TRANSPORT_ROUTES, GLOBAL_PROXIES, bypass_warp=bypass_warp)
+                proxy_lookup_target = url if host in ["doodstream", "dood", "d000d"] else host
+                proxy = get_proxy_for_url(
+                    proxy_lookup_target,
+                    TRANSPORT_ROUTES,
+                    GLOBAL_PROXIES,
+                    bypass_warp=bypass_warp,
+                )
                 proxy_list = [proxy] if proxy else []
 
                 if host == "vavoo":
@@ -1103,7 +1109,7 @@ class HLSProxy:
             ):
                 key = "doodstream_direct" if bypass_warp else "doodstream"
                 proxy = get_proxy_for_url(
-                    "doodstream", TRANSPORT_ROUTES, GLOBAL_PROXIES, bypass_warp=bypass_warp
+                    url, TRANSPORT_ROUTES, GLOBAL_PROXIES, bypass_warp=bypass_warp
                 )
                 proxy_list = [proxy] if proxy else []
                 if key not in self.extractors:
@@ -1931,6 +1937,7 @@ class HLSProxy:
             stream_headers = result.get("request_headers", {})
             mediaflow_endpoint = result.get("mediaflow_endpoint", "hls_proxy")
             force_disable_ssl = result.get("disable_ssl", False)
+            selected_proxy = result.get("selected_proxy")
             bypass_warp = result.get("bypass_warp", bypass_warp)
             
             # Log dello stato dell'estrattore
@@ -1980,6 +1987,8 @@ class HLSProxy:
 
             if bypass_warp:
                 header_params += "&warp=off"
+            if selected_proxy:
+                header_params += f"&proxy={urllib.parse.quote(selected_proxy)}"
 
             # 1. URL COMPLETO (Solo per il redirect)
             full_proxy_url = f"{proxy_base}{endpoint}?d={encoded_url}{header_params}"
@@ -2503,6 +2512,7 @@ class HLSProxy:
         """Effettua il proxy dello stream con gestione manifest e AES-128"""
         if bypass_warp is None:
             bypass_warp = request.query.get("warp", "").lower() == "off"
+        forced_proxy = request.query.get("proxy") or None
         try:
             # Ping DLStreams extractor to keep browser alive during playback
             # Use robust markers: Daddy's domains, 'premium' pattern, 'mono.css', or Referer/Origin headers
@@ -2617,7 +2627,11 @@ class HLSProxy:
                     f"[Proxy Stream] Using direct session (forced) for: {stream_url}"
                 )
             else:
-                session, session_proxy = await self._get_proxy_session(stream_url, bypass_warp=bypass_warp)
+                session, session_proxy = await self._get_proxy_session(
+                    stream_url,
+                    bypass_warp=bypass_warp,
+                    forced_proxy=forced_proxy,
+                )
                 
                 # ✅ FIX LOG: Determine correct routing for display
                 if session_proxy:
