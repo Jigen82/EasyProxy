@@ -61,6 +61,7 @@ class DoodStreamExtractor:
         
         async with AsyncCamoufox(
             headless=True,
+            geoip=True,
             proxy={"server": proxy} if proxy else None,
         ) as browser:
             page = await browser.new_page()
