@@ -15,7 +15,7 @@ class FastreamExtractor(BaseExtractor):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Connection": "keep-alive",
             "Accept-Language": "en-US,en;q=0.5",
-            "user-agent": self.base_headers["user-agent"],
+            "user-agent": self.base_headers["User-Agent"],
         }
         patterns = [r'file:"(.*?)"']
 

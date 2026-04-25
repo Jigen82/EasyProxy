@@ -94,7 +94,7 @@ class F16PxExtractor(BaseExtractor):
         self.base_headers["origin"] = origin
         self.base_headers["Accept-Language"] = "en-US,en;q=0.5"
         self.base_headers["Accept"] = "*/*"
-        self.base_headers["user-agent"] = "Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0"
+        self.base_headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; rv:138.0) Gecko/20100101 Firefox/138.0"
 
         return {
             "destination_url": best,

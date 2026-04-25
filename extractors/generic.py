@@ -27,8 +27,8 @@ class GenericHLSExtractor(BaseExtractor):
         # logger.debug(f"[GenericHLSExtractor] Extracting {url}")
         # logger.debug(f"[GenericHLSExtractor] self.request_headers: {self.request_headers}")
 
-        # Inizializza headers con User-Agent di default (in minuscolo)
-        headers = {"user-agent": self.base_headers["user-agent"]}
+        # Inizializza headers con User-Agent di default
+        headers = {"user-agent": self.base_headers.get("User-Agent", self.base_headers.get("user-agent"))}
         
         # ✅ FIX: Non sovrascrivere Referer/Origin se già presenti in request_headers (es. passati via h_ params)
         # Cerchiamo in modo case-insensitive

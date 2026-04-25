@@ -23,7 +23,7 @@ class DroploadExtractor(BaseExtractor):
             "Accept": "*/*",
             "Connection": "keep-alive",
             "Referer": referer,
-            "User-Agent": self.base_headers["user-agent"],
+            "User-Agent": self.base_headers["User-Agent"],
         }
 
         final_url = None
