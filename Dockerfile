@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
     ffmpeg \
     chromium \
-    nodejs \
     libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -66,7 +65,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copia esplicita
 COPY . .
 
-RUN python -m playwright install chromium
+# 5. Playwright is configured to use system Chromium (CHROME_BIN)
+# No need to run 'playwright install chromium' which saves ~500MB
+
 RUN chmod +x entrypoint.sh
 
 # 7. Metadata & Ports
