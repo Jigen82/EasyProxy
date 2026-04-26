@@ -110,6 +110,7 @@ if MPD_MODE in ("legacy", "none", "disabled"):
     LiveTVExtractor,
     F16PxExtractor,
 ) = None, None, None, None, None
+DLStreamsExtractor = None
 StreamHGExtractor = None
 CinemaCityExtractor = None
 DeltabitExtractor = None
@@ -303,8 +304,9 @@ except ImportError:
 try:
     from extractors.dlstreams import DLStreamsExtractor
     logger.info("✅ DLStreamsExtractor module loaded.")
-except ImportError:
-    logger.warning("⚠️ DLStreamsExtractor module not found.")
+except Exception as e:
+    logger.warning("⚠️ DLStreamsExtractor failed to load: %s", e)
+    DLStreamsExtractor = None
 
 try:
     from extractors.cinemacity import CinemaCityExtractor
