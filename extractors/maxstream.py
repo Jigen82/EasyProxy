@@ -138,6 +138,92 @@ class MaxstreamExtractor:
             logger.debug(f"DoH resolution failed for {domain}: {e}")
         return []
 
+    async def _curl_cffi_uprot(self, url: str, method: str, is_binary: bool, **kwargs):
+        """
+        Browser-impersonated request via curl_cffi for uprot.net.
+
+        uprot.net inspects the TLS handshake and serves a captcha page (or
+        outright drops the connection with 503/Connection refused) to any
+        client whose fingerprint isn't a real browser. aiohttp and httpx are
+        easy to spot — Cloudflare's TLS-fingerprinting layer matches them
+        within a few requests and starts replying with /msfi/ /msfld/ as
+        captcha pages even from a clean residential IP.
+
+        curl_cffi with `impersonate="chrome131"` reuses a real Chrome JA3 +
+        ALPN order, so uprot serves the maxstream / stayonline redirect link
+        directly on the first GET. We capture the response cookies into
+        `self.cookies` so the subsequent captcha POST (if any) goes out with
+        PHPSESSID + captcha hash that uprot expects.
+
+        Returns body bytes/str on success, None on failure / Cloudflare
+        challenge — the caller falls through to the regular aiohttp path.
+        """
+        try:
+            from curl_cffi import requests as cffi_requests
+        except ImportError:
+            logger.debug("curl_cffi not installed, skipping browser-impersonation path")
+            return None
+
+        proxies_for_url = self._get_proxies_for_url(url)
+        proxy = proxies_for_url[0] if proxies_for_url else None
+        proxies_arg = {"http": proxy, "https": proxy} if proxy else None
+        # `wait`/`fs_*` and similar kwargs are FlareSolverr-specific; curl_cffi
+        # doesn't accept them. We extract only what curl_cffi understands.
+        headers = dict(kwargs.get("headers") or self.base_headers)
+        post_data = kwargs.get("data")
+        # POST with urlencoded body needs an explicit content-type — curl_cffi
+        # won't infer it for a plain string data and uprot rejects the form
+        # submit with 400/parsing error.
+        if method.upper() == "POST" and isinstance(post_data, (str, bytes)):
+            headers.setdefault("content-type", "application/x-www-form-urlencoded")
+
+        loop = asyncio.get_running_loop()
+
+        def _do_request():
+            try:
+                # Send any cookies the extractor has already collected so the
+                # captcha POST inherits them.
+                req_cookies = dict(self.cookies) if self.cookies else None
+                r = cffi_requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    data=post_data,
+                    cookies=req_cookies,
+                    proxies=proxies_arg,
+                    impersonate="chrome131",
+                    timeout=30,
+                    allow_redirects=True,
+                )
+                cookies = {}
+                try:
+                    cookies = {c.name: c.value for c in r.cookies.jar}
+                except Exception:
+                    cookies = dict(r.cookies) if r.cookies else {}
+                return ("ok" if r.status_code < 400 else "fail", r.status_code,
+                        r.content if is_binary else r.text, cookies)
+            except Exception as inner:
+                return ("error", 0, str(inner), {})
+
+        kind, status, payload, cookies = await loop.run_in_executor(None, _do_request)
+
+        # Always merge cookies — even on a captcha page the PHPSESSID is set
+        # and is required for the form POST to be honoured.
+        if cookies:
+            self.cookies.update(cookies)
+
+        if kind != "ok":
+            logger.debug(f"curl_cffi uprot {method} {url[:80]} → {kind} status={status}")
+            return None
+        # If the body is itself a Cloudflare interstitial, fall through.
+        if not is_binary and isinstance(payload, str) and any(
+            m in payload.lower() for m in ["cf-challenge", "ray id", "checking your browser"]
+        ):
+            logger.debug(f"curl_cffi uprot got CF challenge on {url[:80]}, falling back")
+            return None
+        logger.debug(f"curl_cffi uprot {method} {url[:80]} → {status} len={len(payload)}")
+        return payload
+
     async def _smart_request(self, url: str, method="GET", is_binary=False, **kwargs):
         """Request with parallelized path testing for maximum speed."""
         if url.startswith("data:"):
@@ -152,6 +238,16 @@ class MaxstreamExtractor:
 
         parsed_url = urlparse(url)
         domain = parsed_url.netloc
+
+        # Path 0: For uprot.net, try curl_cffi browser impersonation first.
+        # Bypasses uprot's TLS fingerprinting that aiohttp can't beat —
+        # without this every parallel aiohttp path returns a captcha page or
+        # 503 even from a clean residential IP.
+        if "uprot.net" in domain:
+            cffi_result = await self._curl_cffi_uprot(url, method, is_binary, **kwargs)
+            if cffi_result is not None:
+                return cffi_result
+            logger.debug(f"curl_cffi exhausted for {url[:80]}, falling back to parallel aiohttp")
         
         # Clear previous mapping for this domain
         self.resolver.mapping.pop(domain, None)
@@ -280,8 +376,29 @@ class MaxstreamExtractor:
 
         raise ExtractorError(f"Connection failed for {url} after all parallel attempts.")
 
-    async def _solve_uprot_captcha(self, text: str, original_url: str) -> str:
-        """Find, download and solve captcha on uprot page."""
+    async def _solve_uprot_captcha(self, text: str, original_url: str, max_attempts: int = 2) -> str:
+        """Find, download and solve captcha on uprot page — with retry.
+
+        ddddocr is non-deterministic across initializations on edge captchas,
+        so we give it a couple of shots before giving up. We do NOT re-fetch
+        the uprot page between attempts: uprot rate-limits back-to-back GETs
+        with 503, and the cookies+image stay consistent only within the same
+        page version. The 3-digit pre-validation (`pattern="[0-9]{3}"`) saves
+        a useless POST when OCR returns 2 or 4 chars.
+        """
+        for attempt in range(1, max_attempts + 1):
+            result = await self._solve_uprot_captcha_once(text, original_url)
+            if result:
+                if attempt > 1:
+                    logger.debug(f"Captcha solve: succeeded on attempt {attempt}")
+                return result
+            if attempt < max_attempts:
+                logger.debug(f"Captcha solve: attempt {attempt}/{max_attempts} failed, retrying")
+        logger.debug(f"Captcha solve: all {max_attempts} attempts exhausted")
+        return None
+
+    async def _solve_uprot_captcha_once(self, text: str, original_url: str) -> str:
+        """Single captcha-solve attempt. Returns redirect link or None."""
         try:
             import ddddocr
         except ImportError:
@@ -338,7 +455,15 @@ class MaxstreamExtractor:
             
         # Solve
         res = self._ocr_engine.classification(img_data)
-        logger.debug(f"Captcha solved: {res}")
+        # Strip OCR artifacts (asterisks, letters) — uprot enforces 3 digits.
+        # If we don't have exactly 3, the POST is guaranteed to fail; let the
+        # retry loop fetch a new captcha instead of wasting a POST.
+        res_digits = "".join(c for c in str(res) if c.isdigit())
+        logger.debug(f"Captcha solved: raw={res!r} digits={res_digits!r}")
+        if len(res_digits) != 3:
+            logger.debug(f"Captcha solve: OCR returned {len(res_digits)} digits, need 3 — skip POST")
+            return None
+        res = res_digits
         
         # Prepare form action
         from urllib.parse import urlencode
