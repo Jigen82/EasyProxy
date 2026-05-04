@@ -376,6 +376,7 @@ class HLSProxy:
 
         # Version information
         self.latest_version = "Checking..."
+        self.warp_status = "Checking..." if ENABLE_WARP else "Disabled"
         
         # Registry for DASH native sessions (to handle segment proxying without HLS conversion)
         # session_id -> (base_url, headers, clearkey, timestamp)
