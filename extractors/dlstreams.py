@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 
 # Fallback origin used when the input URL does not include a DLStreams host.
 DLSTREAMS_ENTRY_ORIGIN = "https://dlstreams.com"
-DLSTREAMS_ENTRY_HOSTS = {"dlhd.dad", "dlstreams.com"}
+DLSTREAMS_ENTRY_HOSTS = {"dlhd.pk", "dlstreams.com"}
 
 class ExtractorError(Exception):
     """Custom exception for extraction errors."""
     pass
 
 class DLStreamsExtractor:
-    """Extractor for dlhd.dad / dlstreams streams."""
+    """Extractor for dlhd.pk / dlstreams streams."""
 
     def __init__(self, request_headers: dict = None, proxies: list = None, bypass_warp: bool = False):
         self.request_headers = request_headers or {}
@@ -178,7 +178,7 @@ class DLStreamsExtractor:
             if origin != self.entry_origin:
                 logger.debug("DLStreams entry origin changed from %s to %s", self.entry_origin, origin)
                 self.entry_origin = origin
-                if self.stream_origin in {"https://dlhd.dad", "https://dlstreams.com"}:
+                if self.stream_origin in {"https://dlhd.pk", "https://dlstreams.com"}:
                     self.stream_origin = origin
 
     async def _launch_browser(self):

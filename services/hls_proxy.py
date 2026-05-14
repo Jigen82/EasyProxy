@@ -1278,7 +1278,7 @@ class HLSProxy:
                 return self.extractors[key]
             elif (
                 # Rileva per dominio noto (aggiorna qui se cambia)
-                any(d in url for d in ["dlhd.dad", "dlstreams.com"])
+                any(d in url for d in ["dlhd.pk", "dlstreams.com"])
                 # Rileva per pattern URL stabile (/watch.php?id=NNN)
                 or (re.search(r'/watch\.php\?.*id=\d+', url) is not None)
             ):
@@ -2620,7 +2620,7 @@ class HLSProxy:
             # 3. original_channel_url contains the mono.css manifest pattern
             is_dlstreams_key = False
             if original_channel_url and any(
-                marker in original_channel_url for marker in ["dlhd.dad", "dlstreams.top", "dlstreams.com"]
+                marker in original_channel_url for marker in ["dlhd.pk", "dlstreams.top", "dlstreams.com"]
             ):
                 is_dlstreams_key = True
             elif re.search(r"/key/premium\d+/", key_url):
@@ -2850,11 +2850,11 @@ class HLSProxy:
         try:
             # Ping DLStreams extractor to keep browser alive during playback
             # Use robust markers: Daddy's domains, 'premium' pattern, 'mono.css', or Referer/Origin headers
-            is_dlstreams = any(m in segment_url for m in ["dlhd.dad", "dlstreams", "premium", "mono.css"])
+            is_dlstreams = any(m in segment_url for m in ["dlhd.pk", "dlstreams", "premium", "mono.css"])
             if not is_dlstreams:
                 ref = request.query.get("h_Referer", "") or request.headers.get("Referer", "")
                 origin = request.query.get("h_Origin", "") or request.headers.get("Origin", "")
-                is_dlstreams = any(m in (ref + origin).lower() for m in ["dlhd.dad", "dlstreams"])
+                is_dlstreams = any(m in (ref + origin).lower() for m in ["dlhd.pk", "dlstreams"])
             
             if is_dlstreams:
                 ext = self.extractors.get("dlstreams")
@@ -2962,11 +2962,11 @@ class HLSProxy:
         try:
             # Ping DLStreams extractor to keep browser alive during playback
             # Use robust markers: Daddy's domains, 'premium' pattern, 'mono.css', or Referer/Origin headers
-            is_dlstreams = any(m in stream_url for m in ["dlhd.dad", "dlstreams", "premium", "mono.css"])
+            is_dlstreams = any(m in stream_url for m in ["dlhd.pk", "dlstreams", "premium", "mono.css"])
             if not is_dlstreams:
                 ref = request.query.get("h_Referer", "") or request.headers.get("Referer", "")
                 origin = request.query.get("h_Origin", "") or request.headers.get("Origin", "")
-                is_dlstreams = any(m in (ref + origin).lower() for m in ["dlhd.dad", "dlstreams"])
+                is_dlstreams = any(m in (ref + origin).lower() for m in ["dlhd.pk", "dlstreams"])
 
             if is_dlstreams:
                 ext = self.extractors.get("dlstreams")
