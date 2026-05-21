@@ -62,27 +62,8 @@ class VixSrcExtractor:
         return headers
 
     async def _make_curl_request(self, url: str, headers: dict = None):
-        """Fetch Cloudflare-protected embeds with curl_cffi instead of aiohttp/proxy."""
+        """Fetch Cloudflare-protected embeds with curl_cffi and proxy rotation."""
         from curl_cffi.requests import AsyncSession as CurlAsyncSession
-
-        proxy = self._normalize_proxy_url(self.proxies[0]) if self.proxies else None
-        request_kwargs = {}
-        if proxy:
-            request_kwargs["proxies"] = {"http": proxy, "https": proxy}
-            self.last_used_proxy = proxy
-            logger.info("curl_cffi using proxy for %s", url)
-
-        async with CurlAsyncSession(impersonate="chrome131") as session:
-            resp = await session.get(
-                url,
-                headers=headers,
-                timeout=30,
-                allow_redirects=True,
-                **request_kwargs,
-            )
-            content = resp.text
-
-        logger.info("curl_cffi direct status=%s len=%s for %s", resp.status_code, len(content) if content else 0, url)
 
         class MockResponse:
             def __init__(self, text_content, status, response_url):
@@ -100,7 +81,57 @@ class VixSrcExtractor:
                 if self.status >= 400:
                     raise ExtractorError(f"curl_cffi HTTP error {self.status} for {self.url}")
 
-        return MockResponse(content, resp.status_code, url)
+        proxies_to_try = []
+        route_proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
+        if route_proxy:
+            proxies_to_try.append(route_proxy)
+        for proxy in self.proxies or []:
+            if proxy not in proxies_to_try:
+                proxies_to_try.append(proxy)
+        if not proxies_to_try:
+            proxies_to_try.append(None)
+
+        last_status = None
+        last_error = None
+        final_headers = self._fresh_headers(**(headers or {}))
+
+        for proxy_value in proxies_to_try:
+            request_kwargs = {}
+            proxy = self._normalize_proxy_url(proxy_value) if proxy_value else None
+            if proxy:
+                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+                logger.info("curl_cffi using proxy %s for %s", proxy, url)
+            else:
+                logger.info("curl_cffi using direct connection for %s", url)
+
+            try:
+                async with CurlAsyncSession(impersonate="chrome131") as session:
+                    resp = await session.get(
+                        url,
+                        headers=final_headers,
+                        timeout=30,
+                        allow_redirects=True,
+                        **request_kwargs,
+                    )
+                    content = resp.text
+
+                last_status = resp.status_code
+                logger.info(
+                    "curl_cffi status=%s len=%s for %s",
+                    resp.status_code,
+                    len(content) if content else 0,
+                    url,
+                )
+                if 200 <= resp.status_code < 300:
+                    self.last_used_proxy = proxy
+                    return MockResponse(content, resp.status_code, url)
+            except Exception as exc:
+                last_error = exc
+                logger.warning("curl_cffi request failed for %s via %s: %s", url, proxy or "direct", exc)
+
+        if last_error:
+            raise ExtractorError(f"curl_cffi request failed for {url}: {last_error}")
+        raise ExtractorError(f"curl_cffi HTTP error {last_status} for {url}")
 
     @staticmethod
     def _normalize_base_site(url: str) -> str:
