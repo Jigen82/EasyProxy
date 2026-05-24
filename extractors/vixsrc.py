@@ -88,46 +88,54 @@ class VixSrcExtractor:
         for proxy in self.proxies or []:
             if proxy not in proxies_to_try:
                 proxies_to_try.append(proxy)
-        if not proxies_to_try:
+        # Always try direct connection as last resort
+        if None not in proxies_to_try:
             proxies_to_try.append(None)
 
+        impersonations = ["chrome131", "chrome124", "chrome120"]
         last_status = None
         last_error = None
         final_headers = self._fresh_headers(**(headers or {}))
 
-        for proxy_value in proxies_to_try:
-            request_kwargs = {}
-            proxy = self._normalize_proxy_url(proxy_value) if proxy_value else None
-            if proxy:
-                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
-                logger.info("curl_cffi using proxy %s for %s", proxy, url)
-            else:
-                logger.info("curl_cffi using direct connection for %s", url)
+        # Remove User-Agent to avoid TLS fingerprint mismatch with impersonation
+        final_headers.pop("User-Agent", None)
+        final_headers.pop("user-agent", None)
 
-            try:
-                async with CurlAsyncSession(impersonate="chrome131") as session:
-                    resp = await session.get(
+        for imp in impersonations:
+            for proxy_value in proxies_to_try:
+                request_kwargs = {}
+                proxy = self._normalize_proxy_url(proxy_value) if proxy_value else None
+                if proxy:
+                    request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+                    logger.info("curl_cffi using proxy %s for %s (imp=%s)", proxy, url, imp)
+                else:
+                    logger.info("curl_cffi using direct connection for %s (imp=%s)", url, imp)
+
+                try:
+                    async with CurlAsyncSession(impersonate=imp) as session:
+                        resp = await session.get(
+                            url,
+                            headers=final_headers,
+                            timeout=30,
+                            allow_redirects=True,
+                            **request_kwargs,
+                        )
+                        content = resp.text
+
+                    last_status = resp.status_code
+                    logger.info(
+                        "curl_cffi status=%s len=%s for %s (imp=%s)",
+                        resp.status_code,
+                        len(content) if content else 0,
                         url,
-                        headers=final_headers,
-                        timeout=30,
-                        allow_redirects=True,
-                        **request_kwargs,
+                        imp,
                     )
-                    content = resp.text
-
-                last_status = resp.status_code
-                logger.info(
-                    "curl_cffi status=%s len=%s for %s",
-                    resp.status_code,
-                    len(content) if content else 0,
-                    url,
-                )
-                if 200 <= resp.status_code < 300:
-                    self.last_used_proxy = proxy
-                    return MockResponse(content, resp.status_code, url)
-            except Exception as exc:
-                last_error = exc
-                logger.warning("curl_cffi request failed for %s via %s: %s", url, proxy or "direct", exc)
+                    if 200 <= resp.status_code < 300:
+                        self.last_used_proxy = proxy
+                        return MockResponse(content, resp.status_code, url)
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("curl_cffi request failed for %s via %s (imp=%s): %s", url, proxy or "direct", imp, exc)
 
         if last_error:
             raise ExtractorError(f"curl_cffi request failed for {url}: {last_error}")
@@ -510,10 +518,19 @@ class VixSrcExtractor:
             if "/embed/" in parsed_url.path:
                 self._raise_if_embed_expired(url)
                 if parsed_url.netloc.lower().endswith("vixcloud.co"):
-                    response = await self._make_curl_request(
-                        url,
-                        headers={"referer": self._normalize_base_site(url) + "/"},
-                    )
+                    try:
+                        response = await self._make_robust_request(
+                            url,
+                            headers=self._fresh_headers(
+                                referer=self._normalize_base_site(url) + "/"
+                            ),
+                        )
+                    except Exception as robust_err:
+                        logger.warning("Robust request failed for vixcloud.co, trying curl_cffi: %s", robust_err)
+                        response = await self._make_curl_request(
+                            url,
+                            headers={"referer": self._normalize_base_site(url) + "/"},
+                        )
                 else:
                     response = await self._make_robust_request(
                         url,
