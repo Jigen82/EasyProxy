@@ -194,19 +194,20 @@ class VixSrcExtractor:
                     raise ExtractorError(f"curl_cffi HTTP error {self.status} for {self.url}")
 
         proxies_to_try = []
+        for proxy in self.proxies or []:
+            if proxy and proxy not in proxies_to_try:
+                proxies_to_try.append(proxy)
         route_proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, self.proxies)
         logger.info(
-            "VixSrc curl proxy lookup: url=%s transport_routes=%d extractor_proxies=%d route_proxy=%s",
+            "VixSrc curl proxy lookup: url=%s transport_routes=%d extractor_proxies=%d resolved=%d route_proxy=%s",
             url,
             len(TRANSPORT_ROUTES),
             len(self.proxies or []),
+            len(proxies_to_try),
             route_proxy,
         )
-        if route_proxy:
+        if route_proxy and route_proxy not in proxies_to_try:
             proxies_to_try.append(route_proxy)
-        for proxy in proxies_pool:
-            if proxy not in proxies_to_try:
-                proxies_to_try.append(proxy)
         # Always try direct connection as last resort
         if None not in proxies_to_try:
             proxies_to_try.append(None)
@@ -505,10 +506,15 @@ class VixSrcExtractor:
             logger.info("Trying VixSrc API via curl_cffi proxy rotation: %s", api_url)
             response = await self._make_curl_request(api_url, headers=api_headers)
         except Exception as curl_err:
+            # 404 means content not found — FS won't help, skip cascading fallbacks
+            if "404" in str(curl_err):
+                raise ExtractorError(f"VixSrc API endpoint not found (404): {api_url}")
             logger.warning("curl_cffi failed for API, trying robust: %s", curl_err)
             try:
                 response = await self._make_robust_request(api_url, headers=api_headers)
             except Exception as robust_err:
+                if "404" in str(robust_err):
+                    raise ExtractorError(f"VixSrc content not found (404): {api_url}")
                 logger.warning("Robust failed for API, trying FS fallback: %s", robust_err)
                 response = await self._make_fs_request(
                     api_url,

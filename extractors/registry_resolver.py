@@ -35,8 +35,9 @@ def _resolve_sportsonline_proxy(url: str, bypass_warp: bool = False) -> str | No
 
 
 def _build_proxy_list(primary_proxy: str | None = None, extractor_name: str | None = None) -> list[str]:
+    """Build ordered proxy list: extractor-specific first, then route/primary, then GLOBAL_PROXIES."""
     proxies = []
-    for proxy in ([primary_proxy] if primary_proxy else []) + get_extractor_proxies(extractor_name or "") + list(GLOBAL_PROXIES):
+    for proxy in get_extractor_proxies(extractor_name or "") + ([primary_proxy] if primary_proxy else []) + list(GLOBAL_PROXIES):
         if proxy and proxy not in proxies:
             proxies.append(proxy)
     return proxies
@@ -59,7 +60,9 @@ async def resolve_extractor(self, url: str, request_headers: dict, host: str = N
                 GLOBAL_PROXIES,
                 bypass_warp=bypass_warp,
             )
-            proxy_list = _build_proxy_list(proxy, host)
+            # Normalize host → extractor name for env var lookup (e.g. "city" → "cinemacity")
+            x = {"city": "cinemacity"}.get(host, host)
+            proxy_list = _build_proxy_list(proxy, x)
 
             if host == "vavoo":
                 if key not in self.extractors:
