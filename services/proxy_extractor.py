@@ -200,31 +200,48 @@ class HLSProxyExtractorHandlerMixin:
                         )
                     return await self.shorten_hls_url(manifest_url)
 
-                rewritten_manifest = await ManifestRewriter.rewrite_manifest_urls(
-                    manifest_content=captured_manifest,
-                    base_url=stream_url,
-                    proxy_base=proxy_base,
-                    stream_headers=stream_headers,
-                    original_channel_url=original_channel_url,
-                    api_password=api_password,
-                    get_extractor_func=lambda url, headers, host=None: self.get_extractor(
-                        url, headers, host, bypass_warp=bypass_warp
-                    ),
-                    no_bypass=no_bypass,
-                    shorten_url_func=shorten_captured_manifest_url,
-                    bypass_warp=bypass_warp,
-                    disable_ssl=disable_ssl,
-                    selected_proxy=selected_proxy,
-                )
-                return web.Response(
-                    text=rewritten_manifest,
-                    headers={
-                        "Content-Type": "application/vnd.apple.mpegurl",
-                        "Content-Disposition": 'attachment; filename="stream.m3u8"',
-                        "Access-Control-Allow-Origin": "*",
-                        "Cache-Control": "no-cache",
-                    },
-                )
+                # vidxgo: direct manifest response (needs captured manifest for token refresh)
+                # Others (vixsrc, cinemacity, etc): pre-store captured manifests, then 302 redirect
+                is_vidxgo = hasattr(extractor, 'extractor_name') and extractor.extractor_name == "vidxgo"
+                if is_vidxgo:
+                    async def shorten_captured_manifest_url(manifest_url: str) -> str:
+                        captured_text = captured_manifests.get(manifest_url)
+                        if captured_text:
+                            return await self.store_captured_hls_manifest(
+                                manifest_url,
+                                captured_text,
+                                stream_headers,
+                                source_url=original_channel_url,
+                            )
+                        return await self.shorten_hls_url(manifest_url)
+
+                    rewritten_manifest = await ManifestRewriter.rewrite_manifest_urls(
+                        manifest_content=captured_manifest,
+                        base_url=stream_url,
+                        proxy_base=proxy_base,
+                        stream_headers=stream_headers,
+                        original_channel_url=original_channel_url,
+                        api_password=api_password,
+                        get_extractor_func=lambda url, headers, host=None: self.get_extractor(
+                            url, headers, host, bypass_warp=bypass_warp
+                        ),
+                        no_bypass=no_bypass,
+                        shorten_url_func=shorten_captured_manifest_url,
+                        bypass_warp=bypass_warp,
+                        disable_ssl=disable_ssl,
+                        selected_proxy=selected_proxy,
+                    )
+                    return web.Response(
+                        text=rewritten_manifest,
+                        headers={
+                            "Content-Type": "application/vnd.apple.mpegurl",
+                            "Access-Control-Allow-Origin": "*",
+                            "Cache-Control": "no-cache",
+                        },
+                    )
+                else:
+                    for man_url in captured_manifests:
+                        await shorten_captured_manifest_url(man_url)
 
             if (
                 redirect_stream
