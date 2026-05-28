@@ -63,7 +63,11 @@ class MaxstreamExtractor:
         self.selected_proxy = None
         self.resolver = StaticResolver()
     def _get_random_proxy(self):
-        return random.choice(self.proxies) if self.proxies else None
+        proxies = []
+        for proxy in list(self.proxies or []) + list(GLOBAL_PROXIES):
+            if proxy and proxy not in proxies:
+                proxies.append(proxy)
+        return random.choice(proxies) if proxies else None
 
     def _get_proxies_for_url(self, url: str) -> list[str]:
         """Build ordered proxy list for current URL, honoring TRANSPORT_ROUTES and per-domain cache."""
@@ -76,7 +80,7 @@ class MaxstreamExtractor:
         if route_proxy and route_proxy not in ordered:
             ordered.append(route_proxy)
 
-        for proxy in self.proxies:
+        for proxy in list(self.proxies or []) + list(GLOBAL_PROXIES):
             if proxy and proxy not in ordered:
                 ordered.append(proxy)
 

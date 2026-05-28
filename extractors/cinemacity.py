@@ -11,6 +11,7 @@ from typing import Any, Optional
 import aiohttp
 from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES
 from curl_cffi.requests import AsyncSession
+from services.proxy_scraper import mark_proxy_success, mark_proxy_failure, get_cached_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class CinemaCityExtractor:
 
     def __init__(self, request_headers: dict, proxies: list = None):
         self.request_headers = request_headers
-        self.proxies = proxies or GLOBAL_PROXIES
+        self.proxies = proxies or []
         self._cookies = None
         self._user_agent = None
         self.base_url = "https://cinemacity.cc"
@@ -39,10 +40,18 @@ class CinemaCityExtractor:
             return f"socks5h://{proxy_value}"
         return proxy_value
 
+    def _all_proxies(self, url: str) -> list[str]:
+        ordered = []
+        ordered.extend(get_cached_proxies(url))
+        for proxy in list(self.proxies or []) + list(GLOBAL_PROXIES):
+            if proxy and proxy not in ordered:
+                ordered.append(proxy)
+        return ordered
+
     async def _fetch_with_proxies(self, url: str, headers: dict = None) -> tuple[str, dict]:
         from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
-        proxies_to_try = list(self.proxies or [])
+        proxies_to_try = self._all_proxies(url)
         random.shuffle(proxies_to_try)
         if None not in proxies_to_try:
             proxies_to_try.append(None)
@@ -67,9 +76,15 @@ class CinemaCityExtractor:
                     html = resp.text
                     if 200 <= resp.status_code < 300 and html and len(html) > 100:
                         self.last_used_proxy = proxy
+                        if proxy_value:
+                            mark_proxy_success(url, proxy_value)
                         return (True, html, {})
+                    if proxy_value:
+                        mark_proxy_failure(url, proxy_value)
                     return (False, resp.status_code, None)
             except Exception:
+                if proxy_value:
+                    mark_proxy_failure(url, proxy_value)
                 return (False, None, None)
 
         tasks = [_try_one(pv) for pv in proxies_to_try]
@@ -83,7 +98,7 @@ class CinemaCityExtractor:
         if self._cookies and self._user_agent:
             return
         endpoint = f"{self.flaresolverr_url.rstrip('/')}/v1"
-        proxies_to_try = list(self.proxies or [])
+        proxies_to_try = self._all_proxies(self.base_url)
         random.shuffle(proxies_to_try)
         if None not in proxies_to_try:
             proxies_to_try.append(None)
@@ -100,10 +115,16 @@ class CinemaCityExtractor:
                     self._user_agent = d["solution"].get("userAgent",
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                     self.last_used_proxy = proxy.replace("socks5://", "socks5h://", 1) if proxy else None
+                    if proxy:
+                        mark_proxy_success(self.base_url, proxy)
                     logger.info(f"CinemaCity: FS cookies via {proxy or 'direct'}: {list(self._cookies.keys())}")
                     return
+                if proxy:
+                    mark_proxy_failure(self.base_url, proxy)
                 logger.warning("CinemaCity FS failed via %s: %s", proxy or "direct", d.get("message", ""))
             except Exception as e:
+                if proxy:
+                    mark_proxy_failure(self.base_url, proxy)
                 logger.warning("CinemaCity FS error via %s: %s", proxy or "direct", e)
         raise ExtractorError("FlareSolverr: all attempts failed for cinemacity")
 
