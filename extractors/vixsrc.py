@@ -15,6 +15,7 @@ from aiohttp_socks import ProxyError as AioProxyError
 from python_socks import ProxyError as PyProxyError
 from config import get_proxy_for_url, TRANSPORT_ROUTES, GLOBAL_PROXIES, get_connector_for_proxy, SELECTED_PROXY_CONTEXT
 from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, WARP_PROXY_URL
+from services.proxy_scraper import mark_proxy_success, mark_proxy_failure, get_cached_proxies
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class VixSrcExtractor:
         self.flaresolverr_timeout = FLARESOLVERR_TIMEOUT
         self._fs_cookies = None
         self._fs_user_agent = None
+        self._fs_proxy = None
     @staticmethod
     def _normalize_proxy_url(proxy_value: str) -> str:
         proxy_value = proxy_value.strip()
@@ -67,7 +69,17 @@ class VixSrcExtractor:
         site = self._normalize_base_site(target_url)
         endpoint = f"{self.flaresolverr_url.rstrip('/')}/v1"
         warp = WARP_PROXY_URL.strip()
-        proxies_to_try = [warp.replace("socks5h://", "socks5://", 1)] if warp else [None]
+        proxies_to_try = []
+        if warp:
+            proxies_to_try.append(warp.replace("socks5h://", "socks5://", 1))
+        # Domain-cached proxies first (already worked before)
+        proxies_to_try.extend(get_cached_proxies(target_url))
+        # Then scraped proxies (shuffled)
+        scraped = list(self.proxies or [])
+        random.shuffle(scraped)
+        for p in scraped:
+            if p not in proxies_to_try:
+                proxies_to_try.append(p)
         if None not in proxies_to_try:
             proxies_to_try.append(None)
         for proxy in proxies_to_try:
@@ -82,10 +94,18 @@ class VixSrcExtractor:
                     self._fs_cookies = {c["name"]: c["value"] for c in d["solution"].get("cookies", [])}
                     self._fs_user_agent = d["solution"].get("userAgent",
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                    self._fs_proxy = proxy
+                    self.last_used_proxy = proxy.replace("socks5://", "socks5h://", 1) if proxy else None
+                    if proxy:
+                        mark_proxy_success(target_url, proxy)
                     logger.info(f"VixSrc: FS cookies via {proxy or 'direct'}: {list(self._fs_cookies.keys())}")
                     return
+                if proxy:
+                    mark_proxy_failure(target_url, proxy)
                 logger.warning("FS failed via %s: %s", proxy or "direct", d.get("message", ""))
             except Exception as e:
+                if proxy:
+                    mark_proxy_failure(target_url, proxy)
                 logger.warning("FS error via %s: %s", proxy or "direct", e)
         raise ExtractorError("FlareSolverr: all attempts failed")
 
@@ -104,9 +124,9 @@ class VixSrcExtractor:
         final_headers.pop("accept-encoding", None)
 
         request_kwargs = {}
-        warp = WARP_PROXY_URL.strip()
-        if warp:
-            request_kwargs["proxies"] = {"http": warp, "https": warp}
+        if self._fs_proxy:
+            proxy_url = self._fs_proxy.replace("socks5://", "socks5h://", 1)
+            request_kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
 
         async with CurlAsyncSession(impersonate="chrome124") as sess:
             r = await sess.get(url, headers=final_headers, timeout=30, allow_redirects=True, **request_kwargs)
@@ -174,41 +194,44 @@ class VixSrcExtractor:
         final_headers.pop("User-Agent", None)
         final_headers.pop("user-agent", None)
 
-        for imp in impersonations:
-            for proxy_value in proxies_to_try:
-                request_kwargs = {}
-                proxy = self._normalize_proxy_url(proxy_value) if proxy_value else None
-                if proxy:
-                    request_kwargs["proxies"] = {"http": proxy, "https": proxy}
-                    logger.info("curl_cffi using proxy %s for %s (imp=%s)", proxy, url, imp)
-                else:
-                    logger.info("curl_cffi using direct connection for %s (imp=%s)", url, imp)
-
-                try:
-                    async with CurlAsyncSession(impersonate=imp) as session:
-                        resp = await session.get(
-                            url,
-                            headers=final_headers,
-                            timeout=30,
-                            allow_redirects=True,
-                            **request_kwargs,
-                        )
-                        content = resp.text
-
-                    last_status = resp.status_code
-                    logger.info(
-                        "curl_cffi status=%s len=%s for %s (imp=%s)",
-                        resp.status_code,
-                        len(content) if content else 0,
+        # Try all proxies in parallel. Return first 200, stop rest.
+        async def _try_one(proxy_value: str, imp: str):
+            request_kwargs = {}
+            proxy = self._normalize_proxy_url(proxy_value) if proxy_value else None
+            if proxy:
+                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+            try:
+                async with CurlAsyncSession(impersonate=imp) as session:
+                    resp = await session.get(
                         url,
-                        imp,
+                        headers=final_headers,
+                        timeout=5,
+                        allow_redirects=True,
+                        **request_kwargs,
                     )
-                    if 200 <= resp.status_code < 300:
-                        self.last_used_proxy = proxy
-                        return MockResponse(content, resp.status_code, url)
-                except Exception as exc:
+                    content = resp.text
+                if 200 <= resp.status_code < 300:
+                    self.last_used_proxy = proxy
+                    return (True, MockResponse(content, resp.status_code, url))
+                logger.debug(
+                    "curl_cffi status=%s len=%s for %s (imp=%s, proxy=%s)",
+                    resp.status_code, len(content) if content else 0, url, imp, proxy or "direct",
+                )
+                return (False, resp.status_code, None)
+            except Exception as exc:
+                logger.debug("curl_cffi failed %s via %s (imp=%s): %s", url, proxy or "direct", imp, exc)
+                return (False, None, exc)
+
+        for imp in impersonations:
+            tasks = [_try_one(pv, imp) for pv in proxies_to_try]
+            for coro in asyncio.as_completed(tasks):
+                ok, status, exc = await coro
+                if ok:
+                    return status
+                if isinstance(status, int):
+                    last_status = status
+                if exc:
                     last_error = exc
-                    logger.warning("curl_cffi request failed for %s via %s (imp=%s): %s", url, proxy or "direct", imp, exc)
 
         if last_error:
             raise ExtractorError(f"curl_cffi request failed for {url}: {last_error}")
@@ -368,7 +391,7 @@ class VixSrcExtractor:
                             resp = await session.get(
                                 url,
                                 headers=headers_403,
-                                timeout=30,
+                            timeout=5,
                                 allow_redirects=True,
                             )
                             status_403 = resp.status_code

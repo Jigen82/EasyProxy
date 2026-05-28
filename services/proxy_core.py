@@ -221,6 +221,12 @@ class HLSProxyCoreMixin:
         asyncio.create_task(self._update_latest_version())
         # Always start WARP check (universal trace method)
         asyncio.create_task(self._update_warp_status_loop())
+        # Fetch free proxy lists from GitHub
+        try:
+            from services.proxy_scraper import refresh_proxies_loop
+            asyncio.create_task(refresh_proxies_loop())
+        except Exception:
+            pass
 
     async def _update_warp_status_loop(self):
         """Periodically checks WARP status via Cloudflare trace (Universal)."""

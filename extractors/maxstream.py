@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp.resolver import DefaultResolver
 from config import FLARESOLVERR_TIMEOUT, FLARESOLVERR_URL, GLOBAL_PROXIES, TRANSPORT_ROUTES, get_proxy_for_url, get_connector_for_proxy, get_solver_proxy_url
+from services.proxy_scraper import mark_proxy_success, mark_proxy_failure, get_cached_proxies
 
 
 logger = logging.getLogger(__name__)
@@ -65,11 +66,14 @@ class MaxstreamExtractor:
         return random.choice(self.proxies) if self.proxies else None
 
     def _get_proxies_for_url(self, url: str) -> list[str]:
-        """Build ordered proxy list for current URL, honoring TRANSPORT_ROUTES first."""
+        """Build ordered proxy list for current URL, honoring TRANSPORT_ROUTES and per-domain cache."""
         ordered = []
 
+        # Per-domain cached proxies first
+        ordered.extend(get_cached_proxies(url))
+
         route_proxy = get_proxy_for_url(url, TRANSPORT_ROUTES, GLOBAL_PROXIES)
-        if route_proxy:
+        if route_proxy and route_proxy not in ordered:
             ordered.append(route_proxy)
 
         for proxy in self.proxies:
@@ -157,11 +161,15 @@ class MaxstreamExtractor:
                     async with session.request(method, url, ssl=False, **call_kwargs) as response:
                         response.raise_for_status()
                         self.selected_proxy = proxy
+                        if proxy:
+                            mark_proxy_success(url, proxy)
                         for k, v in response.cookies.items():
                             self.cookies[k] = v.value
                         return await response.read() if is_binary else await response.text()
             except Exception as e:
                 last_error = e
+                if proxy:
+                    mark_proxy_failure(url, proxy)
                 logger.debug(f"Path failed ({proxy or 'direct'}): {e}")
 
         if not is_binary and "maxstream.video" in domain:
@@ -223,9 +231,13 @@ class MaxstreamExtractor:
                     self.cookies.update(cookies)
                 if status < 400 and text:
                     self.selected_proxy = used_proxy
+                    if used_proxy:
+                        mark_proxy_success(url, used_proxy)
                     logger.debug(f"curl_cffi maxstream success via {used_proxy or 'direct'} profile={used_profile}")
                     return text
                 logger.debug(f"curl_cffi maxstream failed for {url}: status={status} proxy={used_proxy or 'direct'} profile={used_profile}")
+                if used_proxy:
+                    mark_proxy_failure(url, used_proxy)
         return None
 
     async def _fetch_with_flaresolverr(self, url: str, method="GET", headers=None, post_data=None):
@@ -274,10 +286,14 @@ class MaxstreamExtractor:
                     data = await response.json()
         except Exception as exc:
             logger.debug(f"FlareSolverr maxstream failed for {url}: {exc}")
+            if proxy:
+                mark_proxy_failure(url, proxy)
             return None
 
         if data.get("status") != "ok":
             logger.debug(f"FlareSolverr maxstream error for {url}: {data.get('message')}")
+            if proxy:
+                mark_proxy_failure(url, proxy)
             return None
 
         solution = data.get("solution", {})
@@ -287,8 +303,12 @@ class MaxstreamExtractor:
         html = solution.get("response", "")
         if html and not any(marker in html.lower() for marker in ("just a moment", "cf-challenge", "checking your browser")):
             self.selected_proxy = proxy
+            if proxy:
+                mark_proxy_success(url, proxy)
             return html
         logger.debug("FlareSolverr maxstream returned Cloudflare challenge or empty response")
+        if proxy:
+            mark_proxy_failure(url, proxy)
         return None
 
     async def extract(self, url: str, **kwargs) -> dict:
