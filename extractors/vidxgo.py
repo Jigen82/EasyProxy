@@ -53,7 +53,10 @@ _OBFUSCATED_RE = re.compile(
     re.S,
 )
 # Pattern that locates the resolved m3u8 inside the decoded payload.
-_CURRENT_SRC_RE = re.compile(r'currentSrc.+?"(https:[^";]+)"', re.S)
+_CURRENT_SRC_RE = re.compile(
+    r'\bcurrentSrc\s*=\s*["\'](https?:[^"\']+?\.m3u8[^"\']*)["\']',
+    re.S,
+)
 # All <script> tags, capturing their inner contents.
 _SCRIPT_TAG_RE = re.compile(r"<script[^>]*>(.*?)</script>", re.S | re.I)
 
@@ -175,7 +178,9 @@ class VidXgoExtractor:
             cm = _CURRENT_SRC_RE.search(decoded_str)
             if cm:
                 return cm.group(1).replace("\\", "")
-        raise ExtractorError("VidXgo: could not locate currentSrc in any decoded script")
+        if "player-container" in html and "corrupt" in html:
+            raise ExtractorError("VidXgo: source is marked corrupt or not available")
+        raise ExtractorError("VidXgo: could not locate currentSrc m3u8 in any decoded script")
 
     # ------------------------------------------------------------------ manifest transform
 
