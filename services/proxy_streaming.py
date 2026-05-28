@@ -148,7 +148,7 @@ class HLSProxyStreamingMixin:
 
         # Priorità: proxy passato esplicitamente -> proxy in query string
         forced_proxy = forced_proxy or request.query.get("proxy") or None
-
+        request._ps_forced_proxy = forced_proxy
         try:
             # Ping browser-based extractors to keep shared browser alive
             ext = get_browser_activity_extractor(self.extractors)
@@ -797,6 +797,15 @@ class HLSProxyStreamingMixin:
             if "Connection lost" in err_msg or "Connection reset" in err_msg:
                 logger.info(f"ℹ️ Stream connection closed by client or server: {stream_url}")
                 return web.Response(text="Connection lost", status=499)
+
+            # If forced_proxy was set and failed with a proxy/connection error, re-extract
+            forced_proxy = getattr(request, '_ps_forced_proxy', None)
+            if forced_proxy and not getattr(request, '_ps_retried', False):
+                is_proxy_err = any(x in err_msg for x in ("invalid reply", "connection refused", "connection reset", "proxy connection timed out", "can't connect to server", "0x9", "0x7", "socks5"))
+                if is_proxy_err:
+                    request._ps_retried = True
+                    logger.warning("Proxy %s failed for %s, re-extraction needed", forced_proxy, stream_url)
+                    raise Exception("PROXY_DEAD_RETRY_EXTRACTION")
 
             logger.error(
                 "❌ Generic error in stream proxy [%s]: %r",

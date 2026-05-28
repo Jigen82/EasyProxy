@@ -265,6 +265,7 @@ class HLSProxyExtractorHandlerMixin:
                 full_proxy_url += "&redirect_stream=true"
 
             if redirect_stream:
+                logger.info("↪️ Redirecting extractor result to proxy endpoint: %s", endpoint)
                 logger.debug(f"↪️ Redirecting to: {full_proxy_url}")
                 return web.HTTPFound(full_proxy_url)
 
