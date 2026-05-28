@@ -82,6 +82,10 @@ class VixSrcExtractor:
                 proxies_to_try.append(p)
         if None not in proxies_to_try:
             proxies_to_try.append(None)
+        logger.debug("FS: proxies_to_try=%d, self.proxies=%d, GLOBAL_PROXIES=%d, cached=%d, first5=%s",
+                     len(proxies_to_try), len(self.proxies or []), len(GLOBAL_PROXIES),
+                     len(get_cached_proxies(target_url)),
+                     [p[:50] if p else 'direct' for p in proxies_to_try[:5]])
         for proxy in proxies_to_try:
             payload = {"cmd": "request.get", "url": site, "maxTimeout": (self.flaresolverr_timeout + 60) * 1000}
             if proxy:
