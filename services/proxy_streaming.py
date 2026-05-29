@@ -234,6 +234,9 @@ class HLSProxyStreamingMixin:
             headers.pop("x-easyproxy-disable-ssl", None)
             is_special_cdn = is_special_cdn_stream(stream_url)
 
+            if request.path.startswith("/proxy/hls/segment."):
+                self._schedule_segment_count_refresh(stream_url)
+
             if is_special_cdn:
                 headers["Accept-Encoding"] = "identity"
 
@@ -355,7 +358,12 @@ class HLSProxyStreamingMixin:
                     return None
                 refreshed_url = self._refresh_segment_token(stream_url)
                 if not refreshed_url or refreshed_url == stream_url:
-                    return None
+                    refreshed = await self._refresh_captured_hls_for_segment(stream_url)
+                    if not refreshed:
+                        return None
+                    refreshed_url = self._refresh_segment_token(stream_url)
+                    if not refreshed_url or refreshed_url == stream_url:
+                        return None
 
                 if self._should_force_direct_from_query(request):
                     retry_session = await self._get_session(url=refreshed_url)

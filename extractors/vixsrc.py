@@ -38,6 +38,7 @@ class VixSrcExtractor:
             if proxy and proxy not in self.proxies:
                 self.proxies.append(proxy)
         self.is_vixsrc = True
+        self.extractor_name = "vixsrc"
         self.last_used_proxy = None
         self.flaresolverr_url = FLARESOLVERR_URL
         self.flaresolverr_timeout = FLARESOLVERR_TIMEOUT
@@ -334,6 +335,91 @@ class VixSrcExtractor:
                 f"Expired VixSrc embed URL (expired at {expires_ts}, current {now_ts}). "
                 "Use the original /movie/ or /tv/ URL to refresh tokens."
             )
+
+    @staticmethod
+    def _inherit_query_if_missing(absolute_url: str, base_query: str) -> str:
+        if not base_query:
+            return absolute_url
+        parsed_url = urlparse(absolute_url)
+        if parsed_url.query:
+            return absolute_url
+        return urlunparse(parsed_url._replace(query=base_query))
+
+    @staticmethod
+    def _make_live(manifest_text: str) -> str:
+        out_lines = []
+        for line in (manifest_text or "").splitlines():
+            stripped = line.strip()
+            if stripped == "#EXT-X-ENDLIST":
+                continue
+            if stripped.startswith("#EXT-X-PLAYLIST-TYPE"):
+                out_lines.append("#EXT-X-PLAYLIST-TYPE:EVENT")
+                continue
+            out_lines.append(line)
+        if not any(line.startswith("#EXT-X-PLAYLIST-TYPE") for line in out_lines):
+            for idx, line in enumerate(out_lines):
+                if line.strip() == "#EXTM3U":
+                    out_lines.insert(idx + 1, "#EXT-X-PLAYLIST-TYPE:EVENT")
+                    break
+        return "\n".join(out_lines)
+
+    async def _capture_hls_manifests(self, m3u8_url: str, stream_headers: dict):
+        master_response = await self._make_robust_request(
+            m3u8_url,
+            headers=stream_headers,
+            retries=1,
+        )
+        master_url = str(master_response.url)
+        master_text = master_response.text
+        if "#EXTM3U" not in master_text:
+            raise ExtractorError("VixSrc extracted URL did not return a valid HLS manifest")
+        if "#EXTINF" in master_text:
+            master_text = self._make_live(master_text)
+
+        captured_map = {master_url: master_text}
+        master_lines = master_text.splitlines()
+        variant_urls = []
+        base_query = urlparse(master_url).query
+
+        def add_variant(raw_url: str):
+            raw_url = (raw_url or "").strip()
+            if not raw_url or raw_url.startswith("#"):
+                return
+            variant_url = self._inherit_query_if_missing(
+                urljoin(master_url, raw_url),
+                base_query,
+            )
+            if variant_url not in variant_urls:
+                variant_urls.append(variant_url)
+
+        for idx, line in enumerate(master_lines):
+            if line.startswith("#EXT-X-STREAM-INF:") and idx + 1 < len(master_lines):
+                add_variant(master_lines[idx + 1])
+            elif line.startswith("#EXT-X-MEDIA:") and 'URI="' in line:
+                uri_start = line.find('URI="') + 5
+                uri_end = line.find('"', uri_start)
+                if uri_start > 4 and uri_end > uri_start:
+                    add_variant(line[uri_start:uri_end])
+
+        for variant_url in variant_urls:
+            try:
+                variant_response = await self._make_robust_request(
+                    variant_url,
+                    headers=stream_headers,
+                    retries=1,
+                )
+                variant_final_url = str(variant_response.url)
+                variant_text = variant_response.text
+                if "#EXTM3U" not in variant_text:
+                    logger.warning("VixSrc variant is not a valid HLS manifest: %s", variant_url)
+                    continue
+                if "#EXTINF" in variant_text:
+                    variant_text = self._make_live(variant_text)
+                captured_map[variant_final_url] = variant_text
+            except Exception as exc:
+                logger.warning("VixSrc variant capture failed %s: %s", variant_url, exc)
+
+        return master_url, master_text, captured_map
 
     async def _get_session(self, url: str = None):
         """Ottiene una sessione HTTP persistente."""
@@ -660,9 +746,23 @@ class VixSrcExtractor:
                     stream_headers["Cookie"] = cookie_str
                     if self._fs_user_agent:
                         stream_headers["User-Agent"] = self._fs_user_agent
+                captured_manifest = None
+                captured_manifests = {}
+                destination_url = url
+                try:
+                    destination_url, captured_manifest, captured_manifests = await self._capture_hls_manifests(
+                        url,
+                        stream_headers,
+                    )
+                except Exception as exc:
+                    if kwargs.get("background_refresh") or kwargs.get("force_refresh"):
+                        raise
+                    logger.warning("VixSrc manifest capture failed, continuing without capture: %s", exc)
                 return {
-                    "destination_url": url,
+                    "destination_url": destination_url,
                     "request_headers": stream_headers,
+                    "captured_manifest": captured_manifest,
+                    "captured_manifests": captured_manifests,
                     "mediaflow_endpoint": self.mediaflow_endpoint,
                     "selected_proxy": selected_proxy or self.last_used_proxy,
                 }
@@ -804,10 +904,23 @@ class VixSrcExtractor:
                 stream_headers["Cookie"] = cookie_str
                 if self._fs_user_agent:
                     stream_headers["User-Agent"] = self._fs_user_agent
+            captured_manifest = None
+            captured_manifests = {}
+            try:
+                final_url, captured_manifest, captured_manifests = await self._capture_hls_manifests(
+                    final_url,
+                    stream_headers,
+                )
+            except Exception as exc:
+                if kwargs.get("background_refresh") or kwargs.get("force_refresh"):
+                    raise
+                logger.warning("VixSrc manifest capture failed, continuing without capture: %s", exc)
             logger.info("VixSrc URL extracted successfully: %s", final_url)
             return {
                 "destination_url": final_url,
                 "request_headers": stream_headers,
+                "captured_manifest": captured_manifest,
+                "captured_manifests": captured_manifests,
                 "mediaflow_endpoint": self.mediaflow_endpoint,
                 "selected_proxy": self.last_used_proxy,
             }
