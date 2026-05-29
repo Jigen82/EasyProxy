@@ -815,7 +815,7 @@ class HLSProxyStreamingMixin:
             # If forced_proxy was set and failed with a proxy/connection error, re-extract
             forced_proxy = getattr(request, '_ps_forced_proxy', None)
             if forced_proxy and not getattr(request, '_ps_retried', False):
-                is_proxy_err = any(x in err_msg for x in ("invalid reply", "connection refused", "connection reset", "proxy connection timed out", "can't connect to server", "0x9", "0x7", "socks5"))
+                is_proxy_err = any(x in err_msg for x in ("invalid reply", "connection refused", "connection reset", "proxy connection timed out", "can't connect to server", "couldn't connect", "connect call failed", "0x9", "0x7", "socks5"))
                 if is_proxy_err:
                     request._ps_retried = True
                     logger.warning("Proxy %s failed for %s, re-extraction needed", forced_proxy, stream_url)

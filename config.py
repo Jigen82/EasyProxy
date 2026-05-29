@@ -350,12 +350,12 @@ def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
     if not url or not transport_routes:
         return any(
             domain in normalized_url
-            for domain in ("vavoo.to", "vavoo.tv", "lokke.app", "mediahubmx")
+            for domain in ("vavoo.to", "vavoo.tv", "lokke.app", "mediahubmx", "vixsrc.to", "vix-content.net")
         )
 
     if any(
         domain in normalized_url
-        for domain in ("vavoo.to", "vavoo.tv", "lokke.app", "mediahubmx")
+        for domain in ("vavoo.to", "vavoo.tv", "lokke.app", "mediahubmx", "vixsrc.to", "vix-content.net")
     ):
         return True
 
@@ -424,7 +424,7 @@ MAX_RECORDING_DURATION = int(os.environ.get("MAX_RECORDING_DURATION", 28800))
 RECORDINGS_RETENTION_DAYS = int(os.environ.get("RECORDINGS_RETENTION_DAYS", 7))
 
 # --- Version/Mode Configuration ---
-APP_VERSION = "2.7.28"
+APP_VERSION = "2.7.30"
 
 _has_solvers = os.path.exists("flaresolverr")
 VERSION_MODE = "Full" if _has_solvers else "Light"
