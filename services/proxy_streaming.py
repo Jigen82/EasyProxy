@@ -234,8 +234,7 @@ class HLSProxyStreamingMixin:
             headers.pop("x-easyproxy-disable-ssl", None)
             is_special_cdn = is_special_cdn_stream(stream_url)
 
-            if request.path.startswith("/proxy/hls/segment."):
-                self._schedule_segment_count_refresh(stream_url)
+            # VixSrc now uses the simple redirect/proxy flow; no token refresh loop.
 
             if is_special_cdn:
                 headers["Accept-Encoding"] = "identity"
@@ -357,9 +356,15 @@ class HLSProxyStreamingMixin:
             async def retry_hls_segment_with_fresh_token():
                 if not request.path.startswith("/proxy/hls/segment."):
                     return None
+                if self._is_vixsrc_signed_segment(stream_url):
+                    return None
                 refreshed_url = self._refresh_segment_token(stream_url)
                 if not refreshed_url or refreshed_url == stream_url:
-                    refreshed = await self._refresh_captured_hls_for_segment(stream_url)
+                    refreshed = await self._refresh_captured_hls_for_segment(
+                        stream_url,
+                        bypass_warp=bypass_warp,
+                        forced_proxy=forced_proxy,
+                    )
                     if not refreshed:
                         return None
                     refreshed_url = self._refresh_segment_token(stream_url)
@@ -390,9 +395,9 @@ class HLSProxyStreamingMixin:
                     ) as retry_resp:
                         if retry_resp.status not in [200, 206]:
                             retry_routing = (
-                                "WARP"
+                                f"WARP ({retry_proxy})"
                                 if retry_proxy and WARP_PROXY_URL and retry_proxy == WARP_PROXY_URL
-                                else ("BYPASS" if retry_proxy is None else "PROXY")
+                                else ("BYPASS" if retry_proxy is None else f"PROXY ({retry_proxy})")
                             )
                             logger.warning(
                                 "HLS segment token retry failed %s for %s [Routing: %s]",
@@ -494,7 +499,11 @@ class HLSProxyStreamingMixin:
                         except Exception as exc:
                             logger.debug("Manifest 403 recovery hook failed for %s: %s", stream_url, exc)
                     error_body = await resp.read()
-                    routing = "WARP" if (session_proxy and WARP_PROXY_URL and session_proxy == WARP_PROXY_URL) else ("BYPASS" if session_proxy is None else "PROXY")
+                    routing = (
+                        f"WARP ({session_proxy})"
+                        if session_proxy and WARP_PROXY_URL and session_proxy == WARP_PROXY_URL
+                        else ("BYPASS" if session_proxy is None else f"PROXY ({session_proxy})")
+                    )
                     logger.warning(f"⚠️ Upstream returned error {resp.status} for {stream_url} [Routing: {routing}]")
                     return web.Response(body=error_body, status=resp.status, headers={"Content-Type": content_type, "Access-Control-Allow-Origin": "*"})
 

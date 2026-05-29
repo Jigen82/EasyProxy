@@ -203,7 +203,7 @@ class HLSProxyExtractorHandlerMixin:
                 # Signed HLS providers need direct captured manifest responses so
                 # segment retries can refresh stale tokenized URLs.
                 extractor_name = getattr(extractor, 'extractor_name', None)
-                uses_captured_manifest = extractor_name in {"vidxgo", "vixsrc"}
+                uses_captured_manifest = extractor_name in {"vidxgo"}
                 if uses_captured_manifest:
                     async def shorten_captured_manifest_url(manifest_url: str) -> str:
                         captured_text = captured_manifests.get(manifest_url)

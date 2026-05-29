@@ -90,7 +90,7 @@ class HLSProxyManifestHandlerMixin:
                         base_url=captured_url,
                         proxy_base=proxy_base,
                         stream_headers=merged_headers,
-                        original_channel_url=request.query.get("url") or request.query.get("d", ""),
+                        original_channel_url=source_url or request.query.get("url") or request.query.get("d", ""),
                         api_password=request.query.get("api_password"),
                         get_extractor_func=lambda url, headers, host=None: self.get_extractor(
                             url, headers, host, bypass_warp=bypass_warp
@@ -118,7 +118,8 @@ class HLSProxyManifestHandlerMixin:
                 # carries a short-lived token. If the latest captured manifest
                 # for the same stream has fresher tokens, use those instead so
                 # we never hit 403 on the upstream fetch.
-                target_url = self._refresh_segment_token(target_url) or target_url
+                if not self._is_vixsrc_signed_segment(target_url):
+                    target_url = self._refresh_segment_token(target_url) or target_url
                 extractor = None
                 stream_url = target_url
                 stream_headers = {}
