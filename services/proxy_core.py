@@ -34,11 +34,11 @@ class HLSProxyCoreMixin:
 
     def _refresh_segment_token(self, segment_url: str) -> str | None:
         """
-        For signed-token CDN URLs (VidXgo, VixSrc/StreamVix, etc.), rewrite the
-        query of the requested segment so it uses the freshest token currently
-        known in `captured_hls_manifest_map`. Matches by segment path: the
-        path component (everything before `?`) is stable across token
-        rotations, while the query holds the rotating token.
+        For signed-token CDN URLs (VidXgo), rewrite the query of the requested
+        segment so it uses the freshest token currently known in
+        `captured_hls_manifest_map`. Matches by segment path: the path
+        component (everything before `?`) is stable across token rotations,
+        while the query holds the rotating token.
 
         Returns the rewritten URL, or None if no match (caller falls back to
         the original URL).
@@ -52,10 +52,10 @@ class HLSProxyCoreMixin:
         seg_path = parsed.path
         if not seg_path:
             return None
-        # Only meaningful for hosts that put a rotating token in the query.
-        # VidXgo uses `e=` (ms epoch); VixSrc/StreamVix uses `token/expires`.
+        # Only meaningful for hosts that put a rotating VidXgo-style `e=` token
+        # in the query.
         q = urllib.parse.parse_qs(parsed.query)
-        if "e" not in q and not ({"token", "expires"} <= set(q)):
+        if "e" not in q:
             return None
         # Scan all captured variant manifests. The most recently refreshed
         # one wins (highest stored_at).
@@ -72,27 +72,7 @@ class HLSProxyCoreMixin:
                     candidates.append((stored_at, abs_seg))
                     break
         if not candidates:
-            # VixSrc rotates signed query params per rendition. When the player
-            # asks for a segment that just fell out of the latest playlist
-            # window, reuse the freshest URL directory/query from the same
-            # rendition and keep the requested segment filename.
-            if self._is_vixsrc_signed_segment(segment_url):
-                for entry in self.captured_hls_manifest_map.values():
-                    captured_url, captured_manifest, _, stored_at, _, _ = entry
-                    if not captured_manifest:
-                        continue
-                    for abs_seg in self._iter_hls_manifest_urls(captured_url, captured_manifest):
-                        cand = urllib.parse.urlparse(abs_seg)
-                        if self._segment_renditions_match(seg_path, cand.path):
-                            rebuilt = self._rebuild_segment_url_for_same_rendition(
-                                segment_url,
-                                abs_seg,
-                            )
-                            if rebuilt and rebuilt != segment_url:
-                                candidates.append((stored_at, rebuilt))
-                            break
-            if not candidates:
-                return None
+            return None
         candidates.sort(key=lambda x: x[0], reverse=True)
         fresh_url = candidates[0][1]
         if fresh_url == segment_url:
@@ -160,60 +140,6 @@ class HLSProxyCoreMixin:
                 logger.debug("Captured HLS on-demand refresh failed for %s: %s", source_url, exc)
         return False
 
-    def _schedule_segment_count_refresh(
-        self,
-        segment_url: str,
-        threshold: int = 10,
-        bypass_warp: bool = False,
-        forced_proxy: str | None = None,
-    ) -> bool:
-        """Refresh VixSrc before its approximate 12-segment token limit."""
-        if not self._is_vixsrc_signed_segment(segment_url):
-            return False
-
-        matches = self._captured_hls_matches_for_segment(segment_url)
-        if not matches:
-            return False
-
-        _, source_url, _, _ = sorted(matches, key=lambda item: item[0], reverse=True)[0]
-        count_key = f"vixsrc|{source_url}"
-        counts = getattr(self, "captured_hls_segment_counts", None)
-        if counts is None:
-            self.captured_hls_segment_counts = {}
-            counts = self.captured_hls_segment_counts
-        current_count = counts.get(count_key, 0) + 1
-
-        if current_count < threshold:
-            counts[count_key] = current_count
-            return False
-
-        counts[count_key] = 0
-        tasks = getattr(self, "captured_hls_segment_refresh_tasks", None)
-        if tasks is None:
-            self.captured_hls_segment_refresh_tasks = {}
-            tasks = self.captured_hls_segment_refresh_tasks
-        existing_task = tasks.get(count_key)
-        if existing_task and not existing_task.done():
-            return False
-
-        async def refresh_in_background():
-            refreshed = await self._refresh_captured_hls_for_segment(
-                segment_url,
-                bypass_warp=bypass_warp,
-                forced_proxy=forced_proxy,
-            )
-            if refreshed:
-                logger.info(
-                    "captured HLS proactive refresh after %d VixSrc segments: %s",
-                    threshold,
-                    source_url,
-                )
-
-        task = asyncio.create_task(refresh_in_background())
-        tasks[count_key] = task
-        task.add_done_callback(lambda _task, key=count_key: tasks.pop(key, None))
-        return True
-
     def _captured_hls_matches_for_segment(self, segment_url: str):
         try:
             parsed = urllib.parse.urlparse(segment_url)
@@ -229,23 +155,10 @@ class HLSProxyCoreMixin:
                 continue
             for abs_seg in self._iter_hls_manifest_urls(captured_url, captured_manifest):
                 cand = urllib.parse.urlparse(abs_seg)
-                if self._segment_paths_match(parsed.path, cand.path) or (
-                    self._is_vixsrc_signed_segment(segment_url)
-                    and self._segment_renditions_match(parsed.path, cand.path)
-                ):
+                if self._segment_paths_match(parsed.path, cand.path):
                     matches.append((stored_at, source_url, captured_headers, entry_ttl))
                     break
         return matches
-
-    @staticmethod
-    def _is_vixsrc_signed_segment(segment_url: str) -> bool:
-        try:
-            parsed = urllib.parse.urlparse(segment_url)
-            params = urllib.parse.parse_qs(parsed.query)
-        except Exception:
-            return False
-        host = parsed.netloc.lower()
-        return "vix-content.net" in host and {"token", "expires"} <= set(params)
 
     @staticmethod
     def _iter_hls_manifest_urls(captured_url: str, captured_manifest: str):
@@ -262,15 +175,12 @@ class HLSProxyCoreMixin:
 
     @staticmethod
     def _parse_signed_expiry_ts(u: str) -> float | None:
-        """Parse HLS signed URL expiry from VidXgo `e=` or VixSrc `expires=`."""
+        """Parse HLS signed URL expiry from VidXgo `e=`."""
         try:
             params = urllib.parse.parse_qs(urllib.parse.urlparse(u).query)
             raw_e = params.get("e", [None])[0]
             if raw_e:
                 return float(raw_e) / 1000.0
-            raw_expires = params.get("expires", [None])[0]
-            if raw_expires:
-                return float(raw_expires)
         except Exception:
             return None
         return None
@@ -290,32 +200,6 @@ class HLSProxyCoreMixin:
 
         common_tail = min(3, len(old_parts), len(candidate_parts))
         return old_parts[-common_tail:] == candidate_parts[-common_tail:]
-
-    @staticmethod
-    def _segment_renditions_match(old_path: str, candidate_path: str) -> bool:
-        old_parts = [part for part in old_path.split("/") if part]
-        candidate_parts = [part for part in candidate_path.split("/") if part]
-        if len(old_parts) < 3 or len(candidate_parts) < 3:
-            return False
-        # VixSrc video paths end with .../video/<rendition>/<segment>.ts.
-        return old_parts[-3:-1] == candidate_parts[-3:-1]
-
-    @staticmethod
-    def _rebuild_segment_url_for_same_rendition(old_url: str, fresh_url: str) -> str | None:
-        try:
-            old = urllib.parse.urlparse(old_url)
-            fresh = urllib.parse.urlparse(fresh_url)
-        except Exception:
-            return None
-        old_parts = [part for part in old.path.split("/") if part]
-        fresh_parts = [part for part in fresh.path.split("/") if part]
-        if not old_parts or not fresh_parts:
-            return None
-        fresh_dir = "/" + "/".join(fresh_parts[:-1])
-        rebuilt_path = f"{fresh_dir}/{old_parts[-1]}"
-        return urllib.parse.urlunparse(
-            fresh._replace(path=rebuilt_path, query=fresh.query)
-        )
 
     async def store_captured_hls_manifest(
         self,
@@ -425,7 +309,7 @@ class HLSProxyCoreMixin:
         parsed = urllib.parse.urlparse(manifest_url)
         path_parts = [part for part in parsed.path.split("/") if part]
         suffix = "/".join(path_parts[-3:]) or manifest_url
-        volatile_params = {"token", "expires", "asn", "edge"}
+        volatile_params = {"e"}
         stable_params = [
             (key, value)
             for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)

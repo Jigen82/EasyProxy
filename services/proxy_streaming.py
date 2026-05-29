@@ -234,8 +234,6 @@ class HLSProxyStreamingMixin:
             headers.pop("x-easyproxy-disable-ssl", None)
             is_special_cdn = is_special_cdn_stream(stream_url)
 
-            # VixSrc now uses the simple redirect/proxy flow; no token refresh loop.
-
             if is_special_cdn:
                 headers["Accept-Encoding"] = "identity"
 
@@ -355,8 +353,6 @@ class HLSProxyStreamingMixin:
 
             async def retry_hls_segment_with_fresh_token():
                 if not request.path.startswith("/proxy/hls/segment."):
-                    return None
-                if self._is_vixsrc_signed_segment(stream_url):
                     return None
                 refreshed_url = self._refresh_segment_token(stream_url)
                 if not refreshed_url or refreshed_url == stream_url:

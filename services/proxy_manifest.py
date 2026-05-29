@@ -118,8 +118,7 @@ class HLSProxyManifestHandlerMixin:
                 # carries a short-lived token. If the latest captured manifest
                 # for the same stream has fresher tokens, use those instead so
                 # we never hit 403 on the upstream fetch.
-                if not self._is_vixsrc_signed_segment(target_url):
-                    target_url = self._refresh_segment_token(target_url) or target_url
+                target_url = self._refresh_segment_token(target_url) or target_url
                 extractor = None
                 stream_url = target_url
                 stream_headers = {}
