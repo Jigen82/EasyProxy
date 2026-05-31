@@ -75,6 +75,7 @@ class HLSProxyCoreMixin:
             seen_sources.add(source_url)
             try:
                 proxy_token = SELECTED_PROXY_CONTEXT.set(forced_proxy)
+                strict_proxy_token = STRICT_PROXY_CONTEXT.set(bool(forced_proxy))
                 try:
                     extractor = await self.get_extractor(
                         source_url,
@@ -91,6 +92,7 @@ class HLSProxyCoreMixin:
                     )
                 finally:
                     SELECTED_PROXY_CONTEXT.reset(proxy_token)
+                    STRICT_PROXY_CONTEXT.reset(strict_proxy_token)
                 refreshed_headers = refreshed.get("request_headers", captured_headers)
                 refreshed_manifests = list((refreshed.get("captured_manifests") or {}).items())
                 if not refreshed_manifests and refreshed.get("captured_manifest"):
@@ -301,7 +303,8 @@ class HLSProxyCoreMixin:
     async def start_tasks(self):
         """Starts background tasks for the proxy."""
         asyncio.create_task(self._update_latest_version())
-        asyncio.create_task(self._update_warp_status_loop())
+        if ENABLE_WARP:
+            asyncio.create_task(self._update_warp_status_loop())
         asyncio.create_task(self._cleanup_stale_sessions())
 
     async def _cleanup_stale_sessions(self):
@@ -332,7 +335,10 @@ class HLSProxyCoreMixin:
         while True:
             try:
                 # We use the proxy session to check if the SOCKS5H proxy is working
-                session, _ = await self._get_proxy_session("https://www.cloudflare.com/cdn-cgi/trace")
+                session, _ = await self._get_proxy_session(
+                    "https://www.cloudflare.com/cdn-cgi/trace",
+                    forced_proxy=WARP_PROXY_URL,
+                )
                 async with session.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=5) as resp:
                     if resp.status == 200:
                         text = await resp.text()
