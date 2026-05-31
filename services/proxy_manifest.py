@@ -91,7 +91,7 @@ class HLSProxyManifestHandlerMixin:
                         base_url=captured_url,
                         proxy_base=proxy_base,
                         stream_headers=merged_headers,
-                        original_channel_url=source_url or request.query.get("url") or request.query.get("d", ""),
+                        original_channel_url=request.query.get("orig_url") or source_url or request.query.get("url") or request.query.get("d", ""),
                         api_password=request.query.get("api_password"),
                         get_extractor_func=lambda url, headers, host=None: self.get_extractor(
                             url, headers, host, bypass_warp=bypass_warp
@@ -263,7 +263,7 @@ class HLSProxyManifestHandlerMixin:
                 scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
                 host = request.headers.get("X-Forwarded-Host", request.host)
                 proxy_base = f"{scheme}://{host}"
-                original_channel_url = request.query.get("url") or request.query.get("d", "")
+                original_channel_url = request.query.get("orig_url") or request.query.get("url") or request.query.get("d", "")
                 api_password = request.query.get("api_password")
                 no_bypass = request.query.get("no_bypass") == "1"
                 use_short_hls_urls = should_use_short_captured_manifest_urls(
@@ -677,14 +677,15 @@ class HLSProxyManifestHandlerMixin:
             # Retry extraction once if proxy died during playlist fetch
             if "proxy_dead_retry_extraction" in error_msg and not getattr(request, '_extraction_retried', False):
                 request._extraction_retried = True
-                logger.warning("⚠️ Proxy died during playlist fetch, re-extracting %s", target_url)
+                extraction_url = request.query.get("orig_url") or target_url
+                logger.warning("⚠️ Proxy died during playlist fetch, re-extracting %s (orig URL: %s)", target_url, extraction_url)
                 try:
-                    extractor2 = await self.get_extractor(target_url, combined_headers, bypass_warp=bypass_warp)
+                    extractor2 = await self.get_extractor(extraction_url, combined_headers, bypass_warp=bypass_warp)
                     if extractor2:
                         extractor2.request_headers = combined_headers
                         result2 = await extractor2.extract(
-                            target_url,
-                            force_refresh=force_refresh,
+                            extraction_url,
+                            force_refresh=True,
                             request_headers=combined_headers,
                             bypass_warp=bypass_warp,
                         )

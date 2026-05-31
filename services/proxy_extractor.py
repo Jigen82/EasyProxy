@@ -186,9 +186,12 @@ class HLSProxyExtractorHandlerMixin:
                 header_params += f"&proxy={urllib.parse.quote(selected_proxy)}"
             if force_direct:
                 header_params += "&direct=1"
+            orig_url_val = request.query.get("orig_url") or url
+            if orig_url_val:
+                header_params += f"&orig_url={urllib.parse.quote(orig_url_val, safe='')}"
 
             if redirect_stream and captured_manifest and endpoint == "/proxy/hls/manifest.m3u8":
-                original_channel_url = request.query.get("url") or request.query.get("d", "")
+                original_channel_url = request.query.get("orig_url") or request.query.get("url") or request.query.get("d", "")
                 no_bypass = request.query.get("no_bypass") == "1"
                 is_vavoo_req = (
                     "vavoo" in (request.query.get("h_Referer") or "").lower()

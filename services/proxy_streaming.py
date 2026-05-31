@@ -647,7 +647,7 @@ class HLSProxyStreamingMixin:
                     scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
                     host = request.headers.get("X-Forwarded-Host", request.host)
                     proxy_base = f"{scheme}://{host}"
-                    original_url = request.query.get("url") or request.query.get("d", "")
+                    original_url = request.query.get("orig_url") or request.query.get("url") or request.query.get("d", "")
                     use_short_hls_urls = should_use_short_manifest_urls(
                         original_url,
                         request.query.get("host", ""),
