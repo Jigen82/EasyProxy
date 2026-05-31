@@ -82,7 +82,16 @@ class HLSProxyStreamingMixin:
                     session, _ = await self._get_proxy_session(
                         segment_url, bypass_warp=bypass_warp, forced_proxy=current_proxy
                     )
-                    disable_ssl = get_ssl_setting_for_url(segment_url, TRANSPORT_ROUTES)
+                    is_vavoo_req = (
+                        "vavoo" in (request.query.get("h_Referer") or "").lower()
+                        or "vavoo" in (request.query.get("h_Origin") or "").lower()
+                        or "vavoo" in (headers.get("Referer") or "").lower()
+                        or "vavoo" in (headers.get("Origin") or "").lower()
+                        or "vavoo" in (request.headers.get("Referer") or "").lower()
+                        or "vavoo" in segment_url.lower()
+                        or any(x in segment_url.lower() for x in ["/sunshine/", "lokke", "mediahubmx"])
+                    )
+                    disable_ssl = get_ssl_setting_for_url(segment_url, TRANSPORT_ROUTES) or is_vavoo_req
                     # ✅ Use yarl.URL with encoded=True to prevent double-encoding of commas
                     final_segment_url = yarl.URL(segment_url, encoded=True)
                     resp_ctx = session.get(final_segment_url, headers=headers, ssl=not disable_ssl)
@@ -273,11 +282,21 @@ class HLSProxyStreamingMixin:
             # logger.info(f"   Final Stream Headers: {headers}")
 
             # ✅ NUOVO: Determina se disabilitare SSL per questo dominio
+            is_vavoo_req = (
+                "vavoo" in (request.query.get("h_Referer") or "").lower()
+                or "vavoo" in (request.query.get("h_Origin") or "").lower()
+                or "vavoo" in (headers.get("Referer") or "").lower()
+                or "vavoo" in (headers.get("Origin") or "").lower()
+                or "vavoo" in (request.headers.get("Referer") or "").lower()
+                or "vavoo" in stream_url.lower()
+                or any(x in stream_url.lower() for x in ["/sunshine/", "lokke", "mediahubmx"])
+            )
             disable_ssl = (
                 request.query.get("h_X-EasyProxy-Disable-SSL") == "1"
                 or request.query.get("disable_ssl") == "1"
                 or headers.get("X-EasyProxy-Disable-SSL") == "1"
                 or get_ssl_setting_for_url(stream_url, TRANSPORT_ROUTES)
+                or is_vavoo_req
             )
             headers.pop("X-EasyProxy-Disable-SSL", None)
             headers.pop("x-easyproxy-disable-ssl", None)
@@ -846,7 +865,14 @@ class HLSProxyStreamingMixin:
 
 
         except (ClientPayloadError, ConnectionResetError, OSError) as e:
-            # Errori tipici di disconnessione del client
+            # Errori tipici di disconnessione del client (o proxy caduto/disconnesso mid-stream)
+            active_proxy = session_proxy or forced_proxy
+            if active_proxy:
+                logger.warning(
+                    "Proxy %s failed during stream fetch (payload/reset error): %r. Marking dead.",
+                    active_proxy, e
+                )
+                mark_proxy_dead(active_proxy)
             warp_retry_response = await retry_direct_after_warp(e)
             if warp_retry_response:
                 return warp_retry_response
@@ -859,6 +885,13 @@ class HLSProxyStreamingMixin:
             asyncio.TimeoutError,
         ) as e:
             # Errori di connessione upstream
+            active_proxy = session_proxy or forced_proxy
+            if active_proxy:
+                logger.warning(
+                    "Proxy %s failed connection to source: %r. Marking dead.",
+                    active_proxy, e
+                )
+                mark_proxy_dead(active_proxy)
             warp_retry_response = await retry_direct_after_warp(e)
             if warp_retry_response:
                 return warp_retry_response
@@ -868,6 +901,13 @@ class HLSProxyStreamingMixin:
         except Exception as e:
             err_msg = str(e)
             if "Connection lost" in err_msg or "Connection reset" in err_msg:
+                active_proxy = session_proxy or forced_proxy
+                if active_proxy:
+                    logger.warning(
+                        "Proxy %s connection lost/reset: %r. Marking dead.",
+                        active_proxy, e
+                    )
+                    mark_proxy_dead(active_proxy)
                 warp_retry_response = await retry_direct_after_warp(e)
                 if warp_retry_response:
                     return warp_retry_response
