@@ -683,6 +683,23 @@ class HLSProxyManifestHandlerMixin:
                         stream_headers2 = result2.get("request_headers", {})
                         selected_proxy2 = result2.get("selected_proxy")
                         force_direct2 = result2.get("force_direct", force_direct)
+
+                        original_proxy = request.query.get("proxy")
+                        if original_proxy:
+                            original_proxy = urllib.parse.unquote(original_proxy)
+                            if "://" not in original_proxy and "%3a" in original_proxy.lower():
+                                original_proxy = urllib.parse.unquote(original_proxy)
+
+                        # If the extractor didn't return a specific proxy, try to rotate or get a new one
+                        if not selected_proxy2 and original_proxy:
+                            new_proxy = get_proxy_for_url(stream_url2, TRANSPORT_ROUTES, GLOBAL_PROXIES, bypass_warp=bypass_warp)
+                            if new_proxy and new_proxy != original_proxy:
+                                logger.info("Rotating to a new proxy for re-extracted stream: %s", new_proxy)
+                                selected_proxy2 = new_proxy
+                            else:
+                                logger.info("No alternative proxy found for re-extracted stream, forcing direct connection.")
+                                force_direct2 = True
+
                         logger.info("Re-extraction success: %s", stream_url2[:80])
                         return await self._proxy_stream(request, stream_url2, stream_headers2, bypass_warp=bypass_warp, forced_proxy=selected_proxy2, force_direct=force_direct2)
                 except Exception as retry_err:
