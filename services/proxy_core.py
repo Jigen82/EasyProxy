@@ -219,6 +219,7 @@ class HLSProxyCoreMixin:
                         seconds_left = entry_ttl - (now_ts - stored_at)
                     # Refresh proactively when <60s remain on the token.
                     if seconds_left > 60:
+                        await asyncio.sleep(min(seconds_left - 60, 60))
                         continue
                     # Hard GC only if the entry is long-dead AND no signed URL
                     # to consult (avoid evicting entries that still have valid e=).
@@ -321,6 +322,9 @@ class HLSProxyCoreMixin:
                     except Exception:
                         pass
                 logger.info("🧹 Cleaned stale extractor: %s", key)
+            for key, task in list(self.captured_hls_refresh_tasks.items()):
+                if task.done():
+                    self.captured_hls_refresh_tasks.pop(key, None)
             await try_shutdown_idle_flaresolverr()
 
     async def _update_warp_status_loop(self):
@@ -731,5 +735,10 @@ class HLSProxyCoreMixin:
                 if hasattr(extractor, "close"):
                     await extractor.close()
             self._extractor_atimes.clear()
+
+            for task in self.captured_hls_refresh_tasks.values():
+                task.cancel()
+            self.captured_hls_refresh_tasks.clear()
+            self.captured_hls_manifest_map.clear()
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
