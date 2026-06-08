@@ -4,6 +4,8 @@ import json
 import uuid
 import time
 import asyncio
+import ctypes
+import multiprocessing as mp
 from urllib.parse import urlparse
 
 from Crypto.Hash import SHA256
@@ -91,20 +93,55 @@ def _lz_bits(words) -> int:
     return bits
 
 
-def _solve_pow(nonce: str, difficulty: int, timeout: float = 30.0):
-    """Blocking solver — run inside an executor so it doesn't block the loop."""
+def _pow_worker(nonce_bytes: bytes, difficulty: int, start: int, step: int,
+                found_val, found_flag):
+    """Searches counter values start, start+step, start+2*step, ...
+    Writes the solution into found_val and sets found_flag to 1."""
+    colon = b":"
+    s = start
+    chunk = 2048
+    while not found_flag.value:
+        for _ in range(chunk):
+            if _lz_bits(_pow_hash(nonce_bytes + colon + str(s).encode())) >= difficulty:
+                if not found_flag.value:
+                    found_val.value = s
+                    found_flag.value = 1
+                return
+            s += step
+
+
+def _solve_pow(nonce: str, difficulty: int, timeout: float = 30.0,
+               workers: int = None):
+    """Parallel PoW solver — splits counter space across N worker processes."""
     if difficulty <= 0:
         return "0"
-    prefix = nonce + ":"
-    start = time.time()
-    s = 0
-    while True:
-        for _ in range(2048):
-            if _lz_bits(_pow_hash((prefix + str(s)).encode("latin-1"))) >= difficulty:
-                return str(s)
-            s += 1
-        if time.time() - start > timeout:
-            return None
+
+    n_workers = workers or mp.cpu_count()
+    nonce_bytes = nonce.encode("latin-1")
+
+    found_val  = mp.Value(ctypes.c_longlong, -1)
+    found_flag = mp.Value(ctypes.c_bool, False)
+
+    procs = [
+        mp.Process(target=_pow_worker,
+                   args=(nonce_bytes, difficulty, i, n_workers,
+                         found_val, found_flag))
+        for i in range(n_workers)
+    ]
+    for p in procs:
+        p.start()
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if found_flag.value:
+            break
+        time.sleep(0.05)
+
+    for p in procs:
+        p.terminate()
+        p.join()
+
+    return str(found_val.value) if found_flag.value else None
 
 
 class F16PxExtractor(BaseExtractor):
