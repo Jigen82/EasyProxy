@@ -9,7 +9,7 @@ import urllib.parse
 from typing import Any, Optional
 
 import aiohttp
-from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, GLOBAL_PROXIES, get_solver_proxy_url, get_ordered_proxies_for_url, should_allow_direct_fallback
+from config import FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT, GLOBAL_PROXIES, get_solver_proxy_url, build_flaresolverr_proxy, get_ordered_proxies_for_url, should_allow_direct_fallback
 from config import PROXY_TEST_TIMEOUT
 from curl_cffi.requests import AsyncSession
 from utils.solver_manager import ensure_flaresolverr
@@ -56,8 +56,9 @@ class CinemaCityExtractor:
         for proxy in proxies_to_try:
             payload = {"cmd": "request.get", "url": self.base_url, "maxTimeout": (self.flaresolverr_timeout + 60) * 1000}
             if proxy:
-                cleaned = get_solver_proxy_url(proxy)
-                payload["proxy"] = cleaned
+                p = build_flaresolverr_proxy(proxy)
+                if p:
+                    payload["proxy"] = p
             async with aiohttp.ClientSession() as s:
                 async with s.post(endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=self.flaresolverr_timeout + 95)) as r:
                     d = await r.json()

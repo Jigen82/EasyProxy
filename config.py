@@ -620,6 +620,30 @@ def get_solver_proxy_url(proxy_url: str | None) -> str | None:
     return proxy_url
 
 
+def build_flaresolverr_proxy(proxy_url: str | None) -> dict | None:
+    """Converte un proxy URL in formato FlareSolverr, estraendo credenziali separatamente.
+
+    FlareSolverr richiede username/password come campi separati perché Chromium
+    non supporta --proxy-server con credenziali nell'URL (funziona solo via estensione).
+    """
+    if not proxy_url:
+        return None
+    clean = get_solver_proxy_url(proxy_url)
+    result = {"url": clean}
+    if "@" in clean:
+        try:
+            pp = urllib.parse.urlparse(clean)
+            if pp.username and pp.password:
+                result["username"] = pp.username
+                result["password"] = pp.password
+                result["url"] = f"{pp.scheme}://{pp.hostname}"
+                if pp.port:
+                    result["url"] += f":{pp.port}"
+        except Exception:
+            pass
+    return result
+
+
 def get_ssl_setting_for_url(url: str, transport_routes: list) -> bool:
     """Determina se SSL deve essere disabilitato per un URL basato su TRANSPORT_ROUTES."""
     normalized_url = (url or "").lower()
@@ -717,7 +741,7 @@ MAX_RECORDING_DURATION = int(os.environ.get("MAX_RECORDING_DURATION", 28800))
 RECORDINGS_RETENTION_DAYS = int(os.environ.get("RECORDINGS_RETENTION_DAYS", 7))
 
 # --- Version/Mode Configuration ---
-APP_VERSION = "2.8.15"
+APP_VERSION = "2.8.16"
 
 _has_solvers = os.path.exists("flaresolverr")
 VERSION_MODE = "Full" if _has_solvers else "Light"

@@ -14,11 +14,10 @@ import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 from aiohttp_socks import ProxyError as AioProxyError
 from python_socks import ProxyError as PyProxyError
-from config import TRANSPORT_ROUTES, GLOBAL_PROXIES, WARP_PROXY_URL, get_connector_for_proxy, SELECTED_PROXY_CONTEXT, STRICT_PROXY_CONTEXT, get_solver_proxy_url, get_extractor_proxies, get_ordered_proxies_for_url, should_allow_direct_fallback, mark_proxy_dead, DEAD_PROXIES, _proxy_lock, FLARESOLVERR_URL, FLARESOLVERR_TIMEOUT
+from config import TRANSPORT_ROUTES, GLOBAL_PROXIES, WARP_PROXY_URL, get_connector_for_proxy, SELECTED_PROXY_CONTEXT, STRICT_PROXY_CONTEXT, get_solver_proxy_url, build_flaresolverr_proxy, get_extractor_proxies, get_ordered_proxies_for_url, should_allow_direct_fallback, mark_proxy_dead, DEAD_PROXIES, _proxy_lock
 from config import PROXY_TEST_TIMEOUT, PROXY_TEST_CONCURRENCY
 
 from utils.cookie_cache import CookieCache
-from utils.solver_manager import ensure_flaresolverr
 
 logger = logging.getLogger(__name__)
 
@@ -94,9 +93,14 @@ class VixSrcExtractor:
             proxy = self._normalize_proxy_url(forced_proxy)
             return [proxy]
 
+        # Filter out WARP from fallback proxies when bypass is active
+        fallback = self.proxies
+        if self.bypass_warp_active and WARP_PROXY_URL:
+            fallback = [p for p in (self.proxies or []) if p != WARP_PROXY_URL and p != self._normalize_proxy_url(WARP_PROXY_URL)]
+
         dedicated = self._dedicated_proxies()
         if not dedicated:
-            return get_ordered_proxies_for_url(url, self.extractor_name, self.proxies, bypass_warp=self.bypass_warp_active)
+            return get_ordered_proxies_for_url(url, self.extractor_name, fallback, bypass_warp=self.bypass_warp_active)
 
         # Skip socket check - rely on DEAD_PROXIES + curl_cffi rotation for liveness
         now = time.time()
@@ -105,7 +109,7 @@ class VixSrcExtractor:
         if alive:
             return alive
         # All dedicated proxies dead — fall back to general resolution (direct, WARP, etc.)
-        return get_ordered_proxies_for_url(url, self.extractor_name, self.proxies, bypass_warp=self.bypass_warp_active)
+        return get_ordered_proxies_for_url(url, self.extractor_name, fallback, bypass_warp=self.bypass_warp_active)
 
     async def _preferred_proxy(self, url: str, forced_proxy: str | None = None) -> str | None:
         candidates = await self._proxy_candidates(url, forced_proxy)
@@ -483,12 +487,12 @@ class VixSrcExtractor:
 
                 if e.status == 403 and attempt == retries - 1:
                     try:
-                        logger.info("aiohttp 403, trying FlareSolverr for %s", url)
-                        fs_html = await self._fetch_with_flaresolverr(url, headers=final_headers, forced_proxy=forced_proxy)
-                        if fs_html:
-                            logger.info("FlareSolverr solved challenge, retrying with cookies via curl_cffi")
-                    except Exception as fs_exc:
-                        logger.warning("FlareSolverr fallback failed for %s: %s", url, fs_exc)
+                        logger.info("aiohttp 403, trying Scrapling for %s", url)
+                        sp_html = await self._fetch_with_scrapling(url, headers=final_headers, forced_proxy=forced_proxy)
+                        if sp_html:
+                            logger.info("Scrapling solved challenge, retrying with cookies via curl_cffi")
+                    except Exception as sp_exc:
+                        logger.warning("Scrapling fallback failed for %s: %s", url, sp_exc)
                     try:
                         logger.info("aiohttp 403, trying curl_cffi with configured proxies for %s", url)
                         headers_403 = final_headers or self._default_headers()
@@ -506,69 +510,109 @@ class VixSrcExtractor:
                     raise ExtractorError(f"Final error for {url}: {str(e)}")
                 await asyncio.sleep(initial_delay)
 
-    async def _fetch_with_flaresolverr(self, url: str, headers: dict = None, forced_proxy: str | None = None) -> str | None:
-        """Fallback a FlareSolverr per bypassare challenge Cloudflare."""
-        if not FLARESOLVERR_URL:
-            logger.info("FlareSolverr not configured, skipping")
-            return None
-
-        payload = {
-            "cmd": "request.get",
-            "url": url,
-            "maxTimeout": (FLARESOLVERR_TIMEOUT + 60) * 1000,
-        }
-
-        fs_proxy = forced_proxy or await self._preferred_proxy(url)
-        if fs_proxy:
-            payload["proxy"] = {"url": get_solver_proxy_url(fs_proxy)}
-
-        cookie_header = (headers or {}).get("Cookie") or (headers or {}).get("cookie")
-        if cookie_header:
-            parsed = urlparse(url)
-            payload["cookies"] = [
-                {
-                    "name": key.strip(),
-                    "value": value.strip(),
-                    "domain": parsed.hostname,
-                    "path": "/",
-                    "secure": parsed.scheme == "https",
-                }
-                for item in cookie_header.split(";")
-                if "=" in item
-                for key, value in [item.split("=", 1)]
-            ]
-
-        await ensure_flaresolverr()
+    async def _fetch_with_scrapling(self, url: str, headers: dict = None, forced_proxy: str | None = None) -> str | None:
+        """Fallback a Scrapling (StealthyFetcher) per bypassare challenge Cloudflare."""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{FLARESOLVERR_URL.rstrip('/')}/v1",
-                    json=payload,
-                    timeout=ClientTimeout(total=FLARESOLVERR_TIMEOUT + 95),
-                ) as resp:
-                    data = await resp.json()
+            from scrapling.fetchers import StealthyFetcher
+        except ImportError:
+            logger.warning("Scrapling not installed, skipping")
+            return None
+
+        logger.info("VixSrc: trying Scrapling for %s", url)
+
+        req_headers = dict(headers or {})
+        user_agent = req_headers.pop("User-Agent", None) or req_headers.pop("user-agent", None)
+        cookie_str = req_headers.pop("Cookie", None) or req_headers.pop("cookie", None)
+
+        cookies = []
+        if cookie_str:
+            for c in cookie_str.split(";"):
+                if "=" in c:
+                    name, value = c.strip().split("=", 1)
+                    cookies.append({"name": name, "value": value, "domain": f".{urlparse(url).hostname}", "path": "/"})
+
+        proxy_url = None
+        if forced_proxy:
+            p = build_flaresolverr_proxy(forced_proxy)
+            if p:
+                proxy_url = p
+        else:
+            raw = await self._preferred_proxy(url)
+            if raw:
+                proxy_url = build_flaresolverr_proxy(raw)
+
+        def _run():
+            fetch_kwargs = {
+                "headless": True,
+                "solve_cloudflare": True,
+                "wait_until": "network_idle",
+                "timeout": 60000,
+                "extra_headers": req_headers,
+                "cookies": cookies,
+            }
+            if user_agent:
+                fetch_kwargs["useragent"] = user_agent
+            if proxy_url:
+                fetch_kwargs["proxy"] = proxy_url
+            response = StealthyFetcher.fetch(url, **fetch_kwargs)
+            import time
+            time.sleep(0.5)
+            return response
+
+        try:
+            response = await asyncio.to_thread(_run)
         except Exception as exc:
-            logger.warning("FlareSolverr vixsrc failed for %s: %s", url, exc)
+            logger.warning("Scrapling vixsrc failed for %s: %s", url, exc)
             return None
 
-        if data.get("status") != "ok":
-            logger.warning("FlareSolverr vixsrc error for %s: %s", url, data.get("message"))
+        html = response.html_content or ""
+        if html and any(marker in html.lower() for marker in ("just a moment", "cf-challenge", "checking your browser")):
+            logger.warning("Scrapling vixsrc returned Cloudflare challenge for %s", url)
             return None
 
-        solution = data.get("solution", {})
-        html = solution.get("response", "")
-        if html and not any(marker in html.lower() for marker in ("just a moment", "cf-challenge", "checking your browser")):
-            logger.info("FlareSolverr success for %s", url)
-            raw_cookies = list(solution.get("cookies", []))
-            logger.info("FlareSolverr cookies count: %d, keys: %s", len(raw_cookies), [c.get("name") for c in raw_cookies[:5]])
-            new_cookies = {c["name"]: c["value"] for c in raw_cookies if c.get("name")}
-            if new_cookies:
-                self.cookies.update(new_cookies)
-                self._save_cached_cookies(url)
-                logger.info("FlareSolverr saved %d cookies", len(new_cookies))
-            return html
+        # Extract JSON from HTML wrapper (<p> or <pre> tags)
+        text = html
+        for tag in ("pre", "p"):
+            m = re.search(f"<{tag}[^>]*>(.*?)</{tag}>", text, re.DOTALL)
+            if m:
+                text = html.unescape(m.group(1))
+                break
+        if text != html and text.startswith("{"):
+            try:
+                json.loads(text)
+                logger.info("Scrapling success for %s", url)
+                # Save cookies from response
+                if response.cookies:
+                    new_cookies = {}
+                    for c in response.cookies:
+                        if isinstance(c, dict) and c.get("name"):
+                            new_cookies[c["name"]] = c.get("value", "")
+                    if new_cookies:
+                        self.cookies.update(new_cookies)
+                        self._save_cached_cookies(url)
+                return text
+            except json.JSONDecodeError:
+                pass
 
-        logger.warning("FlareSolverr vixsrc returned Cloudflare challenge for %s", url)
+        # Direct response (no HTML wrapper)
+        if text.startswith("{"):
+            try:
+                cleaned = html.unescape(text)
+                json.loads(cleaned)
+                logger.info("Scrapling success for %s", url)
+                if response.cookies:
+                    new_cookies = {}
+                    for c in response.cookies:
+                        if isinstance(c, dict) and c.get("name"):
+                            new_cookies[c["name"]] = c.get("value", "")
+                    if new_cookies:
+                        self.cookies.update(new_cookies)
+                        self._save_cached_cookies(url)
+                return cleaned
+            except json.JSONDecodeError:
+                pass
+
+        logger.warning("Scrapling vixsrc returned unexpected response for %s", url)
         return None
 
     async def _parse_html_simple(self, html_content: str, tag: str, attrs: dict = None):
@@ -818,8 +862,8 @@ class VixSrcExtractor:
                         forced_proxy=forced_proxy,
                     )
                 except Exception as curl_err:
-                    logger.warning("curl_cffi failed for embed %s, trying FlareSolverr: %s", vix_url, curl_err)
-                    fs_html = await self._fetch_with_flaresolverr(
+                    logger.warning("curl_cffi failed for embed %s, trying Scrapling: %s", vix_url, curl_err)
+                    fs_html = await self._fetch_with_scrapling(
                         vix_url,
                         headers=self._fresh_headers(referer=self._normalize_base_site(vix_url) + "/"),
                         forced_proxy=forced_proxy,
@@ -873,13 +917,13 @@ class VixSrcExtractor:
                             forced_proxy=forced_proxy,
                         )
                     except Exception as curl_err:
-                        logger.warning("curl_cffi failed for embed %s, trying FlareSolverr: %s", embed_url, curl_err)
-                        fs_html = await self._fetch_with_flaresolverr(
+                        logger.warning("curl_cffi failed for embed %s, trying Scrapling: %s", embed_url, curl_err)
+                        sp_html = await self._fetch_with_scrapling(
                             embed_url,
                             headers=self._fresh_headers(referer=url),
                             forced_proxy=forced_proxy,
                         )
-                        if fs_html:
+                        if sp_html:
                             class MockResponse:
                                 def __init__(self, text_content, status, response_url):
                                     self._text = text_content
@@ -892,9 +936,9 @@ class VixSrcExtractor:
                                     return self._text
                                 def raise_for_status(self):
                                     pass
-                            response = MockResponse(fs_html, 200, embed_url)
+                            response = MockResponse(sp_html, 200, embed_url)
                         else:
-                            logger.warning("FlareSolverr failed for embed %s, trying robust: %s", embed_url, curl_err)
+                            logger.warning("Scrapling failed for embed %s, trying robust: %s", embed_url, curl_err)
                             try:
                                 response = await self._make_robust_request(
                                     embed_url,
@@ -907,13 +951,13 @@ class VixSrcExtractor:
                     try:
                         response = await self._make_curl_request(url, forced_proxy=forced_proxy)
                     except Exception as curl_err:
-                        logger.warning("curl_cffi failed for %s, trying FlareSolverr: %s", url, curl_err)
-                        fs_html = await self._fetch_with_flaresolverr(
+                        logger.warning("curl_cffi failed for %s, trying Scrapling: %s", url, curl_err)
+                        sp_html = await self._fetch_with_scrapling(
                             url,
                             headers=self._fresh_headers(),
                             forced_proxy=forced_proxy,
                         )
-                        if fs_html:
+                        if sp_html:
                             class MockResponse:
                                 def __init__(self, text_content, status, response_url):
                                     self._text = text_content
@@ -926,9 +970,9 @@ class VixSrcExtractor:
                                     return self._text
                                 def raise_for_status(self):
                                     pass
-                            response = MockResponse(fs_html, 200, url)
+                            response = MockResponse(sp_html, 200, url)
                         else:
-                            logger.warning("FlareSolverr failed for %s, trying robust: %s", url, curl_err)
+                            logger.warning("Scrapling failed for %s, trying robust: %s", url, curl_err)
                             try:
                                 response = await self._make_robust_request(url, forced_proxy=None)
                             except Exception as robust_err:

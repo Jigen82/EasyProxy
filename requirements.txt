@@ -12,4 +12,5 @@ playwright
 Pillow
 curl_cffi
 cloudscraper
+scrapling[fetchers]
 brotli
