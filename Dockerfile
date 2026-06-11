@@ -83,8 +83,7 @@ RUN echo "FS refresh: ${FLARESOLVERR_REFRESH}" \
 # 4. EasyProxy Dependencies
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    patchright install chromium
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia esplicita
 COPY . .

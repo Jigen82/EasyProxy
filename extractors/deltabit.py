@@ -12,7 +12,7 @@ from config import (
     FLARESOLVERR_URL, 
     FLARESOLVERR_TIMEOUT, 
     get_solver_proxy_url, 
-    build_flaresolverr_proxy,
+    build_proxy_with_auth,
     GLOBAL_PROXIES,
     get_connector_for_proxy,
     get_preferred_proxy_for_url,
@@ -81,7 +81,7 @@ class DeltabitExtractor:
             payload["url"] = url
             proxy = await get_preferred_proxy_for_url(url, "deltabit", self.proxies, self.bypass_warp_active)
             if proxy:
-                p = build_flaresolverr_proxy(proxy)
+                p = build_proxy_with_auth(proxy)
                 if p:
                     payload["proxy"] = p
                 fs_headers["X-Proxy-Server"] = get_solver_proxy_url(proxy)
