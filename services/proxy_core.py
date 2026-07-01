@@ -56,37 +56,11 @@ class HLSProxyCoreMixin:
         asyncio.create_task(self._cleanup_stale_sessions())
 
     async def _cleanup_stale_sessions(self):
-        """Periodically close stale extractors unused for >5m."""
+        """Periodic cleanup of stale CDN tokens (extractor cache is disabled —
+        extractors are closed immediately in the finally block)."""
         while True:
             await asyncio.sleep(60)
             now = time.time()
-            stale_streams = [
-                stream_ref for stream_ref, t in self._extractor_stream_atimes.items()
-                if now - t > 300
-            ]
-            for stream_ref in stale_streams:
-                self._extractor_stream_atimes.pop(stream_ref, None)
-            stale_ext = [
-                k for k, t in self._extractor_atimes.items()
-                if (
-                    now - t > 300
-                    and k in self.extractors
-                    and not any(ref[0] == k for ref in self._extractor_stream_atimes)
-                )
-            ]
-            for key in stale_ext:
-                ext = self.extractors.pop(key, None)
-                self._extractor_atimes.pop(key, None)
-                for stream_ref in list(self._extractor_stream_atimes):
-                    if stream_ref[0] == key:
-                        self._extractor_stream_atimes.pop(stream_ref, None)
-                if ext and hasattr(ext, 'close'):
-                    try:
-                        await ext.close()
-                    except Exception:
-                        pass
-                logger.info("🧹 Cleaned stale extractor: %s", key)
-
             # Cleanup stale CDN tokens (>5 min since last use)
             stale_tokens = [
                 k for k, t in getattr(self, '_renewed_cdn_token_atimes', {}).items()
@@ -259,26 +233,55 @@ class HLSProxyCoreMixin:
     @staticmethod
     def _strip_fake_png_header_from_ts(content: bytes) -> bytes:
         """
-        Some providers prepend a fake 8-byte PNG signature to TS segments.
-        Strip it only when bytes after the header still match TS sync markers.
+        Some providers prepend a fake PNG payload to TS segments.
+        embed.st/strmd.st wraps segments as a minimal valid PNG (IHDR+IDAT+IEND,
+        ~70 bytes) followed by the raw MPEG-TS stream. ExoPlayer scans for the
+        TS sync byte and tolerates this; stricter players (MPV/hls.js used by
+        Stremio PC) do not, and stall forever.
+
+        We locate the first 0x47 sync byte that is followed by another 0x47 at
+        +188 bytes (the TS packet size), then strip everything before it. If no
+        such pattern is found we fall back to the legacy 8-byte PNG signature
+        strip so we don't regress providers that only prepend 8 bytes.
         """
+        if not content:
+            return content
+
+        # Fast path: not a PNG at all -> nothing to do.
         png_sig = b"\x89PNG\r\n\x1a\n"
-        if len(content) <= 8 or not content.startswith(png_sig):
+        if not content.startswith(png_sig):
             return content
 
-        ts_payload = content[8:]
-        # MPEG-TS sync byte is 0x47 at packet boundaries.
-        if not ts_payload or ts_payload[0] != 0x47:
-            return content
-        if len(ts_payload) > 188 and ts_payload[188] != 0x47:
-            return content
+        # Generic path: scan for the first TS sync byte (0x47) that repeats at
+        # +188. Bound the scan so we never iterate over a huge payload.
+        scan_limit = min(4096, len(content) - 188)
+        for i in range(0, scan_limit):
+            if content[i] == 0x47 and content[i + 188] == 0x47:
+                if i <= 8:
+                    return content  # already a clean TS
+                payload = content[i:]
+                # Sanity-check a few more packet boundaries to avoid false positives.
+                if len(payload) > 376 and payload[376] != 0x47:
+                    continue
+                logger.info(
+                    "Removed fake PNG header from TS segment (%d -> %d bytes, header=%d)",
+                    len(content), len(payload), i,
+                )
+                return payload
 
-        logger.info(
-            "Removed fake PNG header from TS segment (%d -> %d bytes)",
-            len(content),
-            len(ts_payload),
-        )
-        return ts_payload
+        # Legacy fallback: strip only the 8-byte PNG signature when the bytes
+        # right after it look like a TS packet.
+        if len(content) > 8:
+            ts_payload = content[8:]
+            if ts_payload and ts_payload[0] == 0x47:
+                if len(ts_payload) <= 188 or ts_payload[188] == 0x47:
+                    logger.info(
+                        "Removed fake PNG header from TS segment (%d -> %d bytes)",
+                        len(content), len(ts_payload),
+                    )
+                    return ts_payload
+
+        return content
 
     async def _compute_key_headers(
         self, key_url: str, secret_key: str, user_agent: str = None
