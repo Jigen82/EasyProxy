@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import socket
@@ -26,6 +27,7 @@ class VavooExtractor:
             "user-agent": "okhttp/4.11.0"
         }
         self.session = None
+        self._session_lock = asyncio.Lock()
         self.mediaflow_endpoint = "proxy_stream_endpoint"
         self.proxies = proxies or _cfg.GLOBAL_PROXIES
         self._session_proxy = None
@@ -35,41 +37,41 @@ class VavooExtractor:
         return random.choice(self.proxies) if self.proxies else None
         
     async def _get_session(self, url: str = None):
-        # Determina il proxy per l'URL (se fornito)
-        proxy = await get_preferred_proxy_for_url(url, "vavoo", self.proxies)
-        if not proxy and not url:
-            proxy = self._get_random_proxy()
+        async with self._session_lock:
+            proxy = await get_preferred_proxy_for_url(url, "vavoo", self.proxies)
+            if not proxy and not url:
+                proxy = self._get_random_proxy()
 
-        if (
-            self.session is None
-            or self.session.closed
-            or self._session_proxy != proxy
-        ):
-            if self.session and not self.session.closed:
-                await self.session.close()
+            if (
+                self.session is None
+                or self.session.closed
+                or self._session_proxy != proxy
+            ):
+                if self.session and not self.session.closed:
+                    await self.session.close()
 
-            timeout = ClientTimeout(total=60, connect=30, sock_read=30)
+                timeout = ClientTimeout(total=60, connect=30, sock_read=30)
 
-            if proxy:
-                logger.debug(f"Using proxy for Vavoo session: {proxy}")
-                connector = get_connector_for_proxy(proxy, family=socket.AF_INET)
-            else:
-                connector = TCPConnector(
-                    limit=0,
-                    limit_per_host=0,
-                    keepalive_timeout=60,
-                    enable_cleanup_closed=True,
-                    force_close=False,
-                    use_dns_cache=True,
-                    family=socket.AF_INET
+                if proxy:
+                    logger.debug(f"Using proxy for Vavoo session: {proxy}")
+                    connector = get_connector_for_proxy(proxy, family=socket.AF_INET)
+                else:
+                    connector = TCPConnector(
+                        limit=0,
+                        limit_per_host=0,
+                        keepalive_timeout=60,
+                        enable_cleanup_closed=True,
+                        force_close=False,
+                        use_dns_cache=True,
+                        family=socket.AF_INET
+                    )
+
+                self.session = ClientSession(
+                    timeout=timeout,
+                    connector=connector,
+                    headers={'User-Agent': self.base_headers["user-agent"]}
                 )
-
-            self.session = ClientSession(
-                timeout=timeout,
-                connector=connector,
-                headers={'User-Agent': self.base_headers["user-agent"]}
-            )
-            self._session_proxy = proxy
+                self._session_proxy = proxy
         return self.session
 
     async def _resolve_via_mediahubmx(self, url: str) -> Optional[str]:
