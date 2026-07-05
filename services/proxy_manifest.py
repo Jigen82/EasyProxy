@@ -18,8 +18,7 @@ from services.proxy_shared import (
     parse_clearkey_params,
     MPDToHLSConverter,
     get_ssl_setting_for_url,
-    AioProxyError,
-    PyProxyError,
+    ALL_PROXY_ERRORS,
     ClientConnectionError,
     ProxyDeadRetryError,
     get_proxy_for_url,
@@ -466,8 +465,8 @@ class HLSProxyManifestHandlerMixin:
                                 manifest_content = await resp.text()
                                 break # Success
 
-                        except (AioProxyError, PyProxyError, asyncio.TimeoutError, ClientConnectionError, OSError) as e:
-                            is_proxy = isinstance(e, (AioProxyError, PyProxyError))
+                        except ALL_PROXY_ERRORS + (asyncio.TimeoutError, ClientConnectionError, OSError) as e:
+                            is_proxy = isinstance(e, ALL_PROXY_ERRORS)
                             # Consider ClientConnectionError/OSError as proxy errors if a proxy was used
                             if not is_proxy and mpd_proxy and isinstance(e, (ClientConnectionError, OSError)):
                                 is_proxy = True

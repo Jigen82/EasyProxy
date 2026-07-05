@@ -9,8 +9,28 @@ import contextvars
 import urllib.request
 from dotenv import load_dotenv
 from config_store import get as _cfg_get, set as _cfg_set, get_all as _cfg_get_all
+from aiohttp_socks import (
+    ProxyError as AioProxyError,
+    ProxyConnectionError as AioProxyConnectionError,
+    ProxyTimeoutError as AioProxyTimeoutError,
+)
+from python_socks import (
+    ProxyError as PyProxyError,
+    ProxyConnectionError as PyProxyConnectionError,
+    ProxyTimeoutError as PyProxyTimeoutError,
+)
 
-APP_VERSION = "2.9.52"
+ALL_PROXY_ERRORS = (
+    AioProxyError,
+    AioProxyConnectionError,
+    AioProxyTimeoutError,
+    PyProxyError,
+    PyProxyConnectionError,
+    PyProxyTimeoutError,
+)
+
+
+APP_VERSION = "2.9.53"
 
 
 def get_extractor_proxies(extractor_name: str) -> list:

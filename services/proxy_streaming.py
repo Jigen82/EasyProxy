@@ -22,8 +22,7 @@ from services.proxy_shared import (
     ClientConnectionError,
     ServerDisconnectedError,
     ClientPayloadError,
-    AioProxyError,
-    PyProxyError,
+    ALL_PROXY_ERRORS,
     should_use_short_manifest_urls,
     ManifestRewriter,
     MPDToHLSConverter,
@@ -305,7 +304,7 @@ class HLSProxyStreamingMixin:
                     )
                     resp = await resp_ctx.__aenter__()
                     break
-                except (ClientConnectionError, AioProxyError, PyProxyError, asyncio.TimeoutError, OSError) as e:
+                except ALL_PROXY_ERRORS + (ClientConnectionError, asyncio.TimeoutError, OSError) as e:
                     if session and session_proxy and not session.closed:
                         await session.close()
                         session = None
@@ -1100,13 +1099,11 @@ class HLSProxyStreamingMixin:
             logger.info(f"[INFO] Client disconnected from stream: {stream_url} ({str(e)})")
             return web.Response(text="Client disconnected", status=499)
 
-        except (
+        except ALL_PROXY_ERRORS + (
             ServerDisconnectedError,
             ClientConnectionError,
             asyncio.TimeoutError,
             OSError,
-            AioProxyError,
-            PyProxyError,
         ) as e:
             # Errori di connessione upstream
             active_proxy = session_proxy or forced_proxy
