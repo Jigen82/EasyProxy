@@ -5,7 +5,7 @@ import time
 import urllib.parse
 import aiohttp
 import config_store
-from config import PROXY_SOURCE_LIST, find_first_alive_async
+from config import PROXY_SOURCE_LIST, find_first_alive_async, is_proxy_alive
 import services.proxy_shared as _shared
 from services.proxy_shared import (
     logger,
@@ -281,6 +281,7 @@ class HLSProxyStreamingMixin:
 
             current_proxy = forced_proxy
             attempts = 2 if forced_proxy else 1
+            session = None
             resp = None
             resp_ctx = None
 
@@ -301,6 +302,9 @@ class HLSProxyStreamingMixin:
                     resp = await resp_ctx.__aenter__()
                     break
                 except (ClientConnectionError, AioProxyError, PyProxyError, asyncio.TimeoutError, OSError) as e:
+                    if session and not session.closed:
+                        await session.close()
+                        session = None
                     if attempt == 0 and current_proxy:
                         logger.warning("Segment proxy %s failed for %s: %r. Retrying with a different proxy.", current_proxy, segment_name, e)
                         self._mark_proxy_dead_if_allowed(
@@ -374,6 +378,8 @@ class HLSProxyStreamingMixin:
             finally:
                 if resp_ctx:
                     await resp_ctx.__aexit__(None, None, None)
+                if session and not session.closed:
+                    await session.close()
 
         except Exception as e:
             logger.error(f"Error in segment proxy: {str(e)}")
@@ -669,6 +675,7 @@ class HLSProxyStreamingMixin:
                     stream_url, bypass_warp=True, forced_proxy=None,
                 )
                 if not rot_proxy or rot_proxy == old_proxy:
+                    await rot_session.close()
                     rot_session, rot_proxy = await self._get_proxy_session(
                         stream_url, bypass_warp=True, forced_proxy=None,
                     )
@@ -685,6 +692,9 @@ class HLSProxyStreamingMixin:
                             return web.Response(body=rot_body, status=rot_resp.status, headers=rh)
                 except Exception as exc:
                     logger.debug("Proxy rotation direct retry failed: %s", exc)
+                finally:
+                    if rot_session and not rot_session.closed:
+                        await rot_session.close()
 
                 # 2) Re-extract not available (no captured manifest cache) — give up
                 logger.info("Proxy rotation: re-extract not available (live mode, no cache)")
@@ -696,6 +706,7 @@ class HLSProxyStreamingMixin:
                 retry_target = urllib.parse.unquote(stream_url) if is_special_cdn else yarl.URL(stream_url, encoded=True)
                 for attempt in range(2):
                     await asyncio.sleep(0.15 * (attempt + 1))
+                    retry_session = None
                     try:
                         retry_session, _ = await self._get_proxy_session(
                             stream_url, bypass_warp=bypass_warp, forced_proxy=forced_proxy,
@@ -723,6 +734,9 @@ class HLSProxyStreamingMixin:
                             stream_url,
                             exc,
                         )
+                    finally:
+                        if retry_session and not retry_session.closed:
+                            await retry_session.close()
                 return None
 
             if resp_ctx is None:
@@ -1125,12 +1139,14 @@ class HLSProxyStreamingMixin:
                 is_proxy_err = any(x in err_lower for x in ("invalid reply", "request rejected", "connection refused", "connection reset", "proxy connection timed out", "can't connect to server", "couldn't connect", "connect call failed", "0x9", "0x7", "socks5"))
                 if is_proxy_err:
                     request._ps_retried = True
-                    logger.warning("Proxy %s failed for %s, checking dead policy and triggering re-extraction", forced_proxy, stream_url)
                     self._mark_proxy_dead_if_allowed(
                         forced_proxy,
                         extractor_key=request.query.get("extractor_key"),
                     )
-                    raise ProxyDeadRetryError("PROXY_DEAD_RETRY_EXTRACTION")
+                    if not is_proxy_alive(forced_proxy):
+                        logger.warning("Proxy %s failed for %s, triggering re-extraction", forced_proxy, stream_url)
+                        raise ProxyDeadRetryError("PROXY_DEAD_RETRY_EXTRACTION")
+                    logger.info("Proxy %s had transient error for %s, skipping re-extraction", forced_proxy, stream_url)
 
             logger.error(
                 "❌ Generic error in stream proxy [%s]: %r",
@@ -1139,7 +1155,7 @@ class HLSProxyStreamingMixin:
             )
             return web.Response(text=f"Stream error: {err_msg}", status=500)
         finally:
-            if session and not session.closed:
+            if session and not session.closed and session_proxy is not None:
                 await session.close()
 
     async def _reextract_and_retry_segment(
@@ -1212,6 +1228,8 @@ class HLSProxyStreamingMixin:
             return None
 
         # Fetch the segment with the fresh token
+        retry_session = None
+        need_close = False
         try:
             if force_direct:
                 retry_session = await self._get_session(url=fresh_url)
@@ -1219,6 +1237,7 @@ class HLSProxyStreamingMixin:
                 retry_session, _ = await self._get_proxy_session(
                     fresh_url, bypass_warp=bypass_warp, forced_proxy=forced_proxy,
                 )
+                need_close = True
             import yarl
             target = yarl.URL(fresh_url, encoded=True)
             async with retry_session.get(
@@ -1254,6 +1273,9 @@ class HLSProxyStreamingMixin:
         except Exception as exc:
             logger.debug("Re-extract segment fetch error: %s", exc)
             return None
+        finally:
+            if need_close and retry_session and not retry_session.closed:
+                await retry_session.close()
 
     async def _remux_to_ts(self, content):
         """Converte segmenti (fMP4) in MPEG-TS usando FFmpeg pipe."""
