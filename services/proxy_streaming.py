@@ -22,8 +22,7 @@ from services.proxy_shared import (
     ClientConnectionError,
     ServerDisconnectedError,
     ClientPayloadError,
-    AioProxyError,
-    PyProxyError,
+    ALL_PROXY_ERRORS,
     should_use_short_manifest_urls,
     ManifestRewriter,
     MPDToHLSConverter,
@@ -305,7 +304,7 @@ class HLSProxyStreamingMixin:
                     )
                     resp = await resp_ctx.__aenter__()
                     break
-                except (ClientConnectionError, AioProxyError, PyProxyError, asyncio.TimeoutError, OSError) as e:
+                except ALL_PROXY_ERRORS + (ClientConnectionError, asyncio.TimeoutError, OSError) as e:
                     if session and session_proxy and not session.closed:
                         await session.close()
                         session = None
@@ -1090,23 +1089,21 @@ class HLSProxyStreamingMixin:
                 )
 
 
-        except (ClientPayloadError, ConnectionResetError, OSError) as e:
-            # Errori tipici di disconnessione client o payload troncato durante stream.
-            # Non punire il proxy: i player HLS cancellano spesso richieste in corso.
+        except (ClientPayloadError, ConnectionResetError) as e:
             active_proxy = session_proxy or forced_proxy
             if active_proxy:
                 logger.info(
                     "Stream interrupted while using proxy %s (payload/reset): %r.",
                     active_proxy, e
                 )
-            is_read_timeout = 'Timeout on reading' in str(e) or 'TimeoutError' in type(e).__name__
             logger.info(f"[INFO] Client disconnected from stream: {stream_url} ({str(e)})")
             return web.Response(text="Client disconnected", status=499)
 
-        except (
+        except ALL_PROXY_ERRORS + (
             ServerDisconnectedError,
             ClientConnectionError,
             asyncio.TimeoutError,
+            OSError,
         ) as e:
             # Errori di connessione upstream
             active_proxy = session_proxy or forced_proxy
@@ -1119,6 +1116,10 @@ class HLSProxyStreamingMixin:
                     active_proxy,
                     extractor_key=request.query.get("extractor_key"),
                 )
+            # Reactive WARP reconnect: if WARP failed mid-stream, reconnect immediately
+            if active_proxy and getattr(_shared, 'WARP_PROXY_URL', None) and active_proxy == _shared.WARP_PROXY_URL:
+                logger.warning("WARP stream failure, triggering immediate reconnect...")
+                asyncio.create_task(self.reconnect_warp())
             logger.warning(f"⚠️ Connection lost with source: {stream_url} ({str(e)})")
             return web.Response(text=f"Upstream connection lost: {str(e)}", status=502)
 
