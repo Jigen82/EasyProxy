@@ -1428,7 +1428,7 @@ class HLSProxyStreamingMixin:
                     fetch_init(), fetch_segment()
                 )
             finally:
-                if segment_session and not segment_session.closed:
+                if segment_session and segment_proxy and not segment_session.closed:
                     await segment_session.close()
 
             if init_content is None and init_url:
