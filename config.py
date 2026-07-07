@@ -30,7 +30,7 @@ ALL_PROXY_ERRORS = (
 )
 
 
-APP_VERSION = "2.9.59"
+APP_VERSION = "2.9.60"
 
 
 def get_extractor_proxies(extractor_name: str) -> list:
