@@ -1349,13 +1349,6 @@ class HLSProxyStreamingMixin:
                 async def fetch_init():
                     if not init_url:
                         return b""
-                    # Check cache
-                    cache_key = f"{init_url}_{key}_{key_id}"
-                    cached_val = self.init_segment_cache.get(cache_key)
-                    if cached_val is not None:
-                        logger.debug(f"💾 Using cached init segment: {init_url.split('/')[-1]}")
-                        return cached_val
-
                     disable_ssl = get_ssl_setting_for_url(init_url)
                     try:
                         async with segment_session.get(
@@ -1367,8 +1360,7 @@ class HLSProxyStreamingMixin:
                             if resp.status == 200:
                                 content = await resp.read()
                                 if content:
-                                    self.init_segment_cache[cache_key] = content
-                                return content
+                                    return content
                             logger.error(
                                 f"❌ Init segment returned status {resp.status}: {init_url}"
                             )

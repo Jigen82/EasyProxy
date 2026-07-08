@@ -62,7 +62,6 @@ class HLSProxy(
     def __init__(self):
         # Note: self.extractors, self._extractor_atimes, and self._extractor_stream_atimes 
         # are lazily initialized per asyncio task context to prevent concurrent request race conditions.
-        self.init_segment_cache = {}
 
         # Inizializza il playlist_builder se il modulo è disponibile
         if PlaylistBuilder:

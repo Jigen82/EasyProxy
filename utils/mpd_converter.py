@@ -88,10 +88,15 @@ class MPDToHLSConverter:
                 
             audio_reps.sort(key=sort_audio_func)
 
+            audio_codecs_list = []
+            for _, representation in audio_reps:
+                acodec = representation.get('codecs')
+                if acodec and acodec not in audio_codecs_list:
+                    audio_codecs_list.append(acodec)
+
             for adaptation_set, representation in audio_reps:
                 rep_id = representation.get('id')
                 bandwidth = representation.get('bandwidth', '128000') # Default fallback
-                codecs = representation.get('codecs')
                 
                 # Costruisci URL Media Playlist Audio
                 encoded_url = urllib.parse.quote(original_url, safe='')
@@ -151,13 +156,20 @@ class MPDToHLSConverter:
                     header_params = self._extract_header_params(params)
                     media_url = f"{proxy_base}/proxy/hls/manifest.m3u8?d={encoded_url}&format=hls&rep_id={rep_id}{header_params}"
                     
+                    # Determine codecs (must combine video and audio codecs for HLS spec compliance)
+                    combined_codecs = []
+                    if codecs:
+                        combined_codecs.append(codecs)
+                    if has_audio:
+                        combined_codecs.extend(audio_codecs_list)
+
                     inf = f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}'
                     if width and height:
                         inf += f',RESOLUTION={width}x{height}'
                     if frame_rate:
                         inf += f',FRAME-RATE={frame_rate}'
-                    if codecs:
-                        inf += f',CODECS="{codecs}"'
+                    if combined_codecs:
+                        inf += f',CODECS="{",".join(combined_codecs)}"'
                     
                     # Collega il gruppo audio se presente
                     if has_audio:
