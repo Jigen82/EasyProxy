@@ -399,7 +399,7 @@ class VixSrcExtractor:
         proxy = forced_proxy or self.session_proxy
         if proxy:
             proxy = self._normalize_proxy_url(proxy)
-        allow_direct = bool(self.bypass_warp_active or _cfg.BYPASS_WARP_CONTEXT.get())
+        allow_direct = _cfg.is_direct_connection_allowed(self.bypass_warp_active)
         solution = await solve_cloudflare(
             url,
             proxy_url=get_solver_proxy_url(proxy),
@@ -426,7 +426,7 @@ class VixSrcExtractor:
         proxies_to_try = await self._proxy_candidates(url, forced_proxy)
         if not proxies_to_try and forced_proxy:
             raise ExtractorError("No alive VixSrc forced proxy available")
-        if not proxies_to_try and not self.bypass_warp_active and not _cfg.BYPASS_WARP_CONTEXT.get():
+        if not proxies_to_try and not _cfg.is_direct_connection_allowed(self.bypass_warp_active):
             raise ExtractorError("No alive VixSrc proxy route available; direct fallback disabled")
         preferred_proxy = proxies_to_try[0] if proxies_to_try else None
         logger.info(
@@ -489,6 +489,7 @@ class VixSrcExtractor:
                 return False, proxy, None, exc, None, False
 
         challenge_proxy = None
+        challenge_detected = False
         for imp in impersonations:
             if asyncio.current_task().cancelled():
                 logger.info("Extraction cancelled, skipping remaining impersonations for %s", url)
@@ -506,22 +507,29 @@ class VixSrcExtractor:
                     self.last_used_direct = proxy is None
                     logger.info("curl_cffi success via %s for %s (imp=%s)", proxy or "direct", url, imp)
                     return response
-                if is_challenge and challenge_proxy is None:
-                    challenge_proxy = proxy_value
+                if is_challenge:
+                    challenge_detected = True
+                    if challenge_proxy is None and proxy_value is not None:
+                        challenge_proxy = proxy_value
                 if isinstance(status, int):
                     last_status = status
                 if exc:
                     last_error = exc
 
-        if challenge_proxy is not None:
+        if challenge_detected:
             try:
                 if last_status == 403:
                     self._invalidate_cached_solver_state(url)
                     final_headers = self._fresh_headers(**(headers or {}))
+                solver_proxy = forced_proxy or challenge_proxy or preferred_proxy
+                if solver_proxy is None:
+                    # Prevent a stale proxy from a previous request from being
+                    # reused when this request explicitly selected direct.
+                    self.session_proxy = None
                 return await self._flaresolverr_response(
                     url,
                     headers=final_headers,
-                    forced_proxy=forced_proxy or challenge_proxy or preferred_proxy,
+                    forced_proxy=solver_proxy,
                 )
             except Exception as solver_exc:
                 logger.warning("FlareSolverr challenge solve failed for %s: %s", url, solver_exc)
@@ -604,7 +612,7 @@ class VixSrcExtractor:
             proxy = self._get_random_proxy()
         if proxy:
             proxy = self._normalize_proxy_url(proxy)
-        if proxy is None and not self.bypass_warp_active and not _cfg.BYPASS_WARP_CONTEXT.get():
+        if proxy is None and not _cfg.is_direct_connection_allowed(self.bypass_warp_active):
             raise aiohttp.ClientConnectionError(
                 "VixSrc: direct fallback disabled; no proxy route available"
             )
