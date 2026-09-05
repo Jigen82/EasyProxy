@@ -36,7 +36,7 @@ ALL_PROXY_ERRORS = (
 )
 
 
-APP_VERSION = "2.11.26"
+APP_VERSION = "2.11.27"
 
 _MEMORY_PROFILE_FRAMES = 15
 _memory_profile_baseline = None
@@ -364,10 +364,13 @@ def _get_dynamic_warp_exclude_domains() -> list:
     return merged
 
 def _is_warp_excluded(url: str) -> bool:
-    normalized = url.lower()
-    for domain in WARP_EXCLUDE_DOMAINS:
-        stripped = domain.lstrip("*.")
-        if stripped in normalized:
+    return _matches_excluded_host(url, WARP_EXCLUDE_DOMAINS)
+
+def _matches_excluded_host(url: str, domains: list) -> bool:
+    host = (urllib.parse.urlparse(url or "").hostname or "").lower().rstrip(".")
+    for domain in domains:
+        domain = domain.lower().strip().lstrip("*.").rstrip(".")
+        if domain and (host == domain or host.endswith("." + domain)):
             return True
     return False
 
@@ -375,14 +378,7 @@ def _get_dynamic_proxy_exclude_domains() -> list:
     return _cfg_get("proxy_exclude_domains", [])
 
 def _is_proxy_excluded(url: str) -> bool:
-    if not url:
-        return False
-    normalized = url.lower()
-    for domain in PROXY_EXCLUDE_DOMAINS:
-        stripped = domain.lstrip("*.")
-        if stripped in normalized:
-            return True
-    return False
+    return _matches_excluded_host(url, PROXY_EXCLUDE_DOMAINS)
 
 def _get_dynamic_global_proxies() -> list:
     return _cfg_get("global_proxies", [])

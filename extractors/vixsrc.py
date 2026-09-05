@@ -64,6 +64,8 @@ class _CurlResponse:
 
 class VixSrcExtractor:
     """VixSrc URL extractor per risolvere link VixSrc."""
+    # Includes API/embed fetches and the solver's startup + 60s challenge budget.
+    REQUEST_TIMEOUT_TOTAL = 180
     def __init__(self, request_headers: dict, proxies: list = None, bypass_warp: bool = None):
         self.bypass_warp_active = bypass_warp if bypass_warp is not None else False  # Use WARP by default
         self.request_headers = request_headers

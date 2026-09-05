@@ -71,36 +71,93 @@ class ManifestRewriter:
         api_password: str = None,
         bypass_warp: bool = False,
         disable_ssl: bool = False,
-        session_id: str = None
+        session_id: str = None,
+        forced_proxy: str = None,
+        bypass_proxies: bool = False,
     ) -> str:
         """Riscrive il manifest MPD per DASH nativo (senza conversione HLS)."""
-        try:
-            # 1. Pulizia DRM e pssh (come nella versione Android)
-            # Rimuove blocchi ContentProtection (sia autochiudenti che con body)
-            mpd = manifest_content
-            mpd = re.sub(r'<ContentProtection[\s\S]*?</ContentProtection>', '', mpd, flags=re.IGNORECASE)
-            mpd = re.sub(r'<ContentProtection[^>]*/>', '', mpd, flags=re.IGNORECASE)
-            
-            # Rimuove cenc:pssh
-            mpd = re.sub(r'<cenc:pssh>[\s\S]*?</cenc:pssh>', '', mpd, flags=re.IGNORECASE)
-            mpd = re.sub(r'<cenc:pssh[^>]*/>', '', mpd, flags=re.IGNORECASE)
+        import copy
+        from services.proxy_dash import _encode_dash_state
 
-            # Rimuove BaseURL esistenti (tutti i livelli)
-            mpd = re.sub(r'<BaseURL>[^<]*</BaseURL>\s*', '', mpd)
+        root = ET.fromstring(manifest_content)
+        namespace = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
 
-            # 2. Inserimento BaseURL che punta al nostro proxy
-            # Il path sarà /proxy/mpd/segment/{sessionId}/
-            proxy_segment_base = f"{proxy_base}/proxy/mpd/segment/{session_id}/"
-            
-            mpd_tag_match = re.search(r'(<MPD[^>]*>)', mpd, re.IGNORECASE)
-            if mpd_tag_match:
-                insert_pos = mpd_tag_match.end()
-                mpd = mpd[:insert_pos] + f"\n  <BaseURL>{proxy_segment_base}</BaseURL>" + mpd[insert_pos:]
+        def relay(absolute, init_url=None):
+            parsed = urllib.parse.urlsplit(absolute)
+            directory, tail = parsed.path.rsplit("/", 1)
+            base_directory = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, directory + "/", "", ""))
+            if parsed.query:
+                tail += "?" + parsed.query
+            token = _encode_dash_state(base_directory, stream_headers, clearkey_param,
+                init_url=init_url, proxy=forced_proxy, bypass_warp=bypass_warp,
+                bypass_proxies=bypass_proxies)
+            return f"{proxy_base}/proxy/mpd/segment/{token}/{tail}"
 
-            return mpd
-        except Exception as e:
-            logger.error(f"Error during native MPD rewrite: {e}")
-            return manifest_content
+        def walk(node, base, inherited=None):
+            bases = node.findall(namespace + "BaseURL")
+            if bases:
+                base = urljoin(base, bases[0].text or "")
+            template = node.find(namespace + "SegmentTemplate")
+            if template is None:
+                template = node.find(namespace + "SegmentList")
+            if template is None:
+                template = node.find(namespace + "SegmentBase")
+            effective = copy.deepcopy(inherited) if inherited is not None else None
+            if template is not None:
+                if effective is None or effective.tag != template.tag:
+                    effective = copy.deepcopy(template)
+                else:
+                    effective.attrib.update(template.attrib)
+                    if len(template):
+                        effective[:] = copy.deepcopy(list(template))
+            for child in list(node):
+                if child.tag in (namespace + "Period", namespace + "AdaptationSet", namespace + "Representation"):
+                    walk(child, base, effective)
+            if node.tag == namespace + "Representation":
+                if effective is None:
+                    if clearkey_param:
+                        raise ValueError("ClearKey DASH requires initialization metadata")
+                    ET.SubElement(node, namespace + "BaseURL").text = relay(base)
+                elif effective.tag != namespace + "SegmentTemplate":
+                    init = effective.find(namespace + "Initialization")
+                    init_url = urljoin(base, init.get("sourceURL", "")) if init is not None else None
+                    if clearkey_param and (not init_url or effective.tag == namespace + "SegmentBase"
+                            or any("range" in k.lower() for element in effective.iter() for k in element.attrib)):
+                        raise ValueError("ClearKey byte-range DASH is unsupported; use full-segment HLS")
+                    if init is not None and init.get("sourceURL"):
+                        init.set("sourceURL", relay(init_url, init_url))
+                    for segment in effective.findall(namespace + "SegmentURL"):
+                        for attr in ("media", "index"):
+                            if segment.get(attr):
+                                segment.set(attr, relay(urljoin(base, segment.get(attr)), init_url))
+                    if effective.tag == namespace + "SegmentBase" or (init is not None and not init.get("sourceURL")):
+                        ET.SubElement(node, namespace + "BaseURL").text = relay(base, init_url)
+                    node.append(effective)
+                else:
+                    rewrite_template(node, effective, base)
+            for child in list(node):
+                if child in bases or child is template:
+                    node.remove(child)
+                elif clearkey_param and child.tag.rsplit("}", 1)[-1] in ("ContentProtection", "pssh"):
+                    node.remove(child)
+
+        def rewrite_template(node, effective, base):
+                def expand(value):
+                    return value.replace("$RepresentationID$", node.get("id", "")).replace(
+                        "$Bandwidth$", node.get("bandwidth", ""))
+                init = effective.get("initialization")
+                init_url = urljoin(base, expand(init)) if init else None
+                if clearkey_param and not init_url:
+                    raise ValueError("ClearKey DASH requires explicit initialization")
+                for attr in ("media", "initialization"):
+                    if not effective.get(attr):
+                        continue
+                    absolute = urljoin(base, expand(effective.get(attr)))
+                    effective.set(attr, relay(absolute, init_url))
+                node.append(effective)
+
+        walk(root, mpd_url)
+        return ET.tostring(root, encoding="unicode")
 
     @staticmethod
     def rewrite_mpd_manifest(

@@ -4,11 +4,43 @@ from urllib.parse import urljoin
 import logging
 import os
 import re
+from fractions import Fraction
+import math
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 class MPDToHLSConverter:
     """Converte manifest MPD (DASH) in playlist HLS (m3u8) on-the-fly."""
+    _timeline_sequences = {}
+
+    @staticmethod
+    def _duration_seconds(value):
+        match = re.fullmatch(r'P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?', value or '')
+        if not match:
+            raise ValueError('Unsupported MPD duration')
+        return sum(float(item or 0) * factor for item, factor in zip(match.groups(), (86400, 3600, 60, 1)))
+
+    def _sequence_for_window(self, key, segments, first_timestamp):
+        """Keep overlapping DASH segments at the same HLS sequence on reload."""
+        previous = self._timeline_sequences.get(key, {})
+        base = None
+        for index, segment in enumerate(segments):
+            if segment['time'] in previous:
+                base = previous[segment['time']] - index
+                break
+        if base is None:
+            # Initial numbering is arbitrary; subsequent overlapping windows
+            # are numbered by segment identity, never by variable duration.
+            duration = self._nominal_segment_duration_units(segments)
+            base = int(segments[0]['time'] // duration)
+            if previous:
+                base = max(base, max(previous.values()) + 1)
+        mapping = {segment['time']: base + index for index, segment in enumerate(segments)}
+        self._timeline_sequences[key] = mapping
+        while len(self._timeline_sequences) > 512:
+            self._timeline_sequences.pop(next(iter(self._timeline_sequences)))
+        return mapping[first_timestamp]
     
     def __init__(self):
         self.ns = {
@@ -170,8 +202,8 @@ class MPDToHLSConverter:
             audio_reps.sort(key=sort_audio_func)
 
             audio_codecs_list = []
-            for _, representation in audio_reps:
-                acodec = self._hls_codec(representation.get('codecs'))
+            for adaptation_set, representation in audio_reps:
+                acodec = self._hls_codec(representation.get('codecs') or adaptation_set.get('codecs'))
                 if acodec and acodec not in audio_codecs_list:
                     audio_codecs_list.append(acodec)
 
@@ -200,38 +232,17 @@ class MPDToHLSConverter:
                 lines[1] = '#EXT-X-VERSION:6'
 
             # --- GESTIONE VIDEO (EXT-X-STREAM-INF) ---
-            # Calcola max height per forzare qualità massima (fix iOS/Stremio)
-            max_height = 0
-            for adaptation_set in video_sets:
-                for rep in adaptation_set.findall('mpd:Representation', self.ns):
-                    rep_id = rep.get('id', '')
-                    if 'iframe' in rep_id.lower() or 'i-frame' in rep_id.lower():
-                        continue
-                    try:
-                        h = int(rep.get("height", 0))
-                        if h > max_height: max_height = h
-                    except Exception:
-                        logger.debug("Skipping representation without height")
-                        pass
-
             for adaptation_set in video_sets:
                 for representation in adaptation_set.findall('mpd:Representation', self.ns):
                     rep_id = representation.get('id', '')
                     if 'iframe' in rep_id.lower() or 'i-frame' in rep_id.lower():
                         continue
-                    try:
-                        curr_h = int(representation.get("height", 0))
-                        if curr_h < max_height: continue
-                    except Exception:
-                        logger.debug("Representation height parse failed, keeping it")
-                        pass
-
                     rep_id = representation.get('id')
                     bandwidth = representation.get('bandwidth')
                     width = representation.get('width')
                     height = representation.get('height')
-                    frame_rate = representation.get('frameRate')
-                    codecs = self._hls_codec(representation.get('codecs'))
+                    frame_rate = representation.get('frameRate') or adaptation_set.get('frameRate')
+                    codecs = self._hls_codec(representation.get('codecs') or adaptation_set.get('codecs'))
                     
                     encoded_url = urllib.parse.quote(original_url, safe='')
                     header_params = self._extract_header_params(params)
@@ -244,11 +255,12 @@ class MPDToHLSConverter:
                     if has_audio:
                         combined_codecs.extend(audio_codecs_list)
 
-                    inf = f'#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}'
+                    audio_bandwidth = max((int(rep.get('bandwidth', '0')) for _, rep in audio_reps), default=0)
+                    inf = f'#EXT-X-STREAM-INF:BANDWIDTH={int(bandwidth) + audio_bandwidth}'
                     if width and height:
                         inf += f',RESOLUTION={width}x{height}'
                     if frame_rate:
-                        inf += f',FRAME-RATE={frame_rate}'
+                        inf += f',FRAME-RATE={float(Fraction(frame_rate)):.3f}'
                     if combined_codecs:
                         inf += f',CODECS="{",".join(combined_codecs)}"'
                     
@@ -405,9 +417,17 @@ class MPDToHLSConverter:
                 start_number = int(segment_template.get('startNumber', '1'))
                 
                 # Risolvi URL base
-                base_url_tag = root.find('mpd:BaseURL', self.ns)
-                base_url = base_url_tag.text if base_url_tag is not None else os.path.dirname(original_url)
-                if not base_url.endswith('/'): base_url += '/'
+                parents = {child: parent for parent in root.iter() for child in parent}
+                ancestry = []
+                node = representation
+                while node is not None:
+                    ancestry.append(node)
+                    node = parents.get(node)
+                base_url = original_url
+                for node in reversed(ancestry):
+                    base = node.find('mpd:BaseURL', self.ns)
+                    if base is not None and base.text:
+                        base_url = urljoin(base_url, base.text.strip())
 
                 # --- INITIALIZATION SEGMENT (EXT-X-MAP) ---
                 encoded_init_url = ""
@@ -438,11 +458,32 @@ class MPDToHLSConverter:
                     current_time = 0
                     segment_number = start_number
                     
-                    for s in segment_timeline.findall('mpd:S', self.ns):
+                    timeline_entries = segment_timeline.findall('mpd:S', self.ns)
+                    for entry_index, s in enumerate(timeline_entries):
                         t = s.get('t')
                         if t: current_time = int(t)
                         d = int(s.get('d'))
                         r = int(s.get('r', '0'))
+                        if d <= 0:
+                            raise ValueError('MPD segment duration must be positive')
+                        if r < 0:
+                            next_time = next((int(item.get('t')) for item in timeline_entries[entry_index + 1:] if item.get('t') is not None), None)
+                            if next_time is None:
+                                period = next(p for p in root.findall('mpd:Period', self.ns) if adaptation_set in list(p))
+                                period_start = self._duration_seconds(period.get('start', 'PT0S'))
+                                if period.get('duration'):
+                                    end_seconds = self._duration_seconds(period.get('duration'))
+                                elif root.get('mediaPresentationDuration'):
+                                    end_seconds = self._duration_seconds(root.get('mediaPresentationDuration')) - period_start
+                                elif is_live and root.get('availabilityStartTime'):
+                                    start = datetime.fromisoformat(root.get('availabilityStartTime').replace('Z', '+00:00'))
+                                    published = root.get('publishTime')
+                                    end = datetime.fromisoformat(published.replace('Z', '+00:00')) if published else datetime.now(timezone.utc)
+                                    end_seconds = (end - start).total_seconds() - period_start
+                                else:
+                                    raise ValueError('Cannot bound negative MPD repeat')
+                                next_time = end_seconds * timescale + presentation_time_offset
+                            r = max(0, math.ceil((next_time - current_time) / d)) - 1
                         
                         duration_sec = d / timescale
                         
@@ -464,7 +505,7 @@ class MPDToHLSConverter:
                     
                     if is_live and len(all_segments) > 0:
                         # Calculate global last time and global first time across all video and audio representations in this MPD XML
-                        global_last_time_sec = 0.0
+                        global_last_time_sec = (all_segments[-1]['time'] + all_segments[-1]['d']) / timescale
                         global_first_time_sec = 0.0
                         for period in root.findall('.//mpd:Period', self.ns):
                             for aset in period.findall('mpd:AdaptationSet', self.ns):
@@ -476,7 +517,9 @@ class MPDToHLSConverter:
                                 if 'video' in mime or 'audio' in mime:
                                     template = aset.find('mpd:SegmentTemplate', self.ns)
                                     for r in aset.findall('mpd:Representation', self.ns):
-                                        r_template = r.find('mpd:SegmentTemplate', self.ns) or template
+                                        r_template = r.find('mpd:SegmentTemplate', self.ns)
+                                        if r_template is None:
+                                            r_template = template
                                         if r_template is not None:
                                             r_timescale = int(r_template.get('timescale', '1'))
                                             timeline = r_template.find('mpd:SegmentTimeline', self.ns)
@@ -546,49 +589,15 @@ class MPDToHLSConverter:
                         # Calcola TARGETDURATION dal segmento più lungo
                         max_duration = max(seg['duration'] for seg in segments_to_use)
                         
-                        # MEDIA-SEQUENCE deve essere basato sul timestamp del primo segmento
-                        # per garantire che quando il manifest viene ricaricato, il player
-                        # sappia quali segmenti ha già scaricato e quali sono nuovi.
-                        # 
-                        # Per LIVE stream multi-key, calcoliamo la sequenza dal timestamp:
-                        # sequence = first_segment_timestamp / segment_duration (in timescale units)
-                        # Questo garantisce che video e audio abbiano lo stesso MEDIA-SEQUENCE
-                        # anche se hanno timestamp leggermente diversi, perché usiamo il floor.
+                        # Preserve segment identity across rolling timeline reloads.
                         if len(segments_to_use) > 0:
                             first_seg = segments_to_use[0]
-                            first_seg_time_sec = first_seg['time'] / timescale
-                            # DASH live manifests may reset startNumber to 1
-                            # on every rolling window.  Build a stable HLS
-                            # sequence from media time and the nominal segment
-                            # duration.  Do not use the first segment duration:
-                            # audio timelines legitimately alternate by a few
-                            # milliseconds and that made MEDIA-SEQUENCE jump.
-                            duration_units = self._nominal_segment_duration_units(
-                                all_segments
+                            media_sequence = self._sequence_for_window(
+                                (original_url.split('?')[0], rep_id, timescale, presentation_time_offset, media, initialization),
+                                all_segments,
+                                first_seg['time'],
                             )
-                            media_time = first_seg['time'] - presentation_time_offset
-                            media_sequence = int(round(media_time / duration_units))
 
-                            # A provider/CDN can briefly return an older rolling
-                            # window.  HLS clients treat a backwards sequence as
-                            # a playlist reset and may stop playback, so keep the
-                            # sequence monotonic for this live representation.
-                            sequence_key = f"{original_url.split('?')[0]}::{rep_id}"
-                            if not hasattr(self.__class__, '_last_sequences'):
-                                self.__class__._last_sequences = {}
-                            previous_sequence = self.__class__._last_sequences.get(
-                                sequence_key
-                            )
-                            if (
-                                previous_sequence is not None
-                                and media_sequence < previous_sequence
-                            ):
-                                media_sequence = previous_sequence
-                            self.__class__._last_sequences[sequence_key] = media_sequence
-                            while len(self.__class__._last_sequences) > 512:
-                                self.__class__._last_sequences.pop(
-                                    next(iter(self.__class__._last_sequences))
-                                )
                             
                             lines.append(f'#EXT-X-TARGETDURATION:{int(max_duration) + 1}')
                             lines.append(f'#EXT-X-MEDIA-SEQUENCE:{media_sequence}')

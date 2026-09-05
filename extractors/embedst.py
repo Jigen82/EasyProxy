@@ -228,5 +228,4 @@ class EmbedStExtractor(BaseExtractor):
             except Exception:
                 pass
             self._curl_session = None
-        if self.session and not self.session.closed:
-            await self.session.close()
+        await super().close()

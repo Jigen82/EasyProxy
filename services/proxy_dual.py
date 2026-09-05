@@ -300,21 +300,7 @@ class HLSProxyDualMixin:
         except Exception as exc:
             raise DualLinksError(502, f"extractor failed: {type(exc).__name__}: {exc}") from exc
         finally:
-            if extractor:
-                try:
-                    extractor_key = self._extractor_key_for_instance(extractor) or extractor_key
-                except Exception:
-                    pass
-                if extractor_key and extractor_key in self.extractors:
-                    self.extractors.pop(extractor_key, None)
-                    self._extractor_atimes.pop(extractor_key, None)
-                    for key in [key for key in self._extractor_stream_atimes if key[0] == extractor_key]:
-                        self._extractor_stream_atimes.pop(key, None)
-                if hasattr(extractor, "close"):
-                    try:
-                        await extractor.close()
-                    except Exception:
-                        pass
+            # Shared extractor lifecycle belongs to the registry owner.
             BYPASS_WARP_CONTEXT.reset(bypass_token)
             BYPASS_PROXIES_CONTEXT.reset(proxy_bypass_token)
             SELECTED_PROXY_CONTEXT.reset(selected_token)

@@ -1633,18 +1633,8 @@ class HLSProxyStreamingMixin:
             )
             return None
         finally:
-            # 🚫 Cache disabilitata: chiudi subito l'estrattore re-estratto.
-            _ek = self._extractor_key_for_instance(extractor) if extractor else None
-            if _ek and _ek in self.extractors:
-                self.extractors.pop(_ek, None)
-                self._extractor_atimes.pop(_ek, None)
-                for _sr in [r for r in self._extractor_stream_atimes if r[0] == _ek]:
-                    self._extractor_stream_atimes.pop(_sr, None)
-            if extractor and hasattr(extractor, "close"):
-                try:
-                    await extractor.close()
-                except Exception:
-                    pass
+            # Shared extractor lifecycle belongs to the registry owner.
+            pass
 
         captured_manifests = refreshed.get("captured_manifests") or {}
         master_url = refreshed.get("destination_url")
