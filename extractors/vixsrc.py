@@ -117,8 +117,10 @@ class VixSrcExtractor:
     def _normalize_proxy_url(proxy_value: str) -> str:
         proxy_value = unquote(proxy_value)
         proxy_value = proxy_value.strip()
+        # Preserve explicit SOCKS5 routes. Scheme-less third-party proxies
+        # retain the existing socks5h default.
         if proxy_value.startswith("socks5://"):
-            return proxy_value.replace("socks5://", "socks5h://", 1)
+            return proxy_value
         if proxy_value.startswith("socks4://") or proxy_value.startswith("socks4a://"):
             return proxy_value
         if "://" not in proxy_value:
@@ -390,8 +392,9 @@ class VixSrcExtractor:
         self.last_used_direct = proxy is None
         self._save_solver_solution(url or solution.url, solution)
         logger.info(
-            "VixSrc FlareSolverr solved challenge via %s and returned %d cookies",
+            "VixSrc FlareSolverr solved challenge: route=%s solver_proxy=%s cookies=%d",
             self.last_used_proxy or "direct",
+            get_solver_proxy_url(self.last_used_proxy) or "direct",
             len(solution.cookies),
         )
 
@@ -462,9 +465,10 @@ class VixSrcExtractor:
             proxy = self._normalize_proxy_url(proxy_value) if proxy_value else None
             if proxy:
                 request_kwargs["proxies"] = {"http": proxy, "https": proxy}
-                request_kwargs.update(_cfg.get_curl_ipv4_options(proxy))
             try:
-                async with CurlAsyncSession(impersonate=imp) as session:
+                async with CurlAsyncSession(
+                    impersonate=imp,
+                ) as session:
                     resp = await session.get(
                         url,
                         headers=final_headers,
