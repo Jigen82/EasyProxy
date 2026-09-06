@@ -390,6 +390,28 @@ class HLSProxyCoreMixin:
         healthy, _reason = await self._probe_warp(timeout_sec=timeout_sec)
         return healthy
 
+    async def _restart_warp_if_socket_unhealthy(self, reason: str) -> bool:
+        """Recover a stalled local WireProxy listener without masking origin errors."""
+        if not any(
+            marker in reason
+            for marker in ("component=wireproxy_socket", "component=wireproxy_process")
+        ):
+            return False
+
+        result = await self.reconnect_warp()
+        if (
+            result.get("status") == "ok"
+            and result.get("message") == "WARP userspace tunnel reconnected"
+        ):
+            logger.warning("WARP socket recovery restarted wireproxy")
+            return True
+
+        logger.warning(
+            "WARP socket recovery skipped/failed: %s",
+            result.get("message") or result,
+        )
+        return False
+
     async def get_warp_status(self) -> str:
         """Returns WARP status and fetches real external IP through WARP proxy."""
         healthy, _reason = await self._probe_warp(timeout_sec=10)
@@ -949,6 +971,7 @@ class HLSProxyCoreMixin:
         getattr(self, "_segment_prefetch_cache", {}).clear()
         getattr(self, "_segment_next_urls", {}).clear()
         getattr(self, "_hls_playlist_cache", {}).clear()
+        getattr(self, "_mpd_manifest_cache", {}).clear()
 
         tasks = list(self._background_tasks)
         for task in tasks:

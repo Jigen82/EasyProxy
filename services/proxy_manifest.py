@@ -37,9 +37,52 @@ HLS_MEDIA_PLAYLIST_CACHE_MAX = 64
 HLS_MEDIA_PLAYLIST_CACHE_MIN_TTL = 0.5
 HLS_MEDIA_PLAYLIST_CACHE_MAX_TTL = 2.0
 HLS_VOD_PLAYLIST_CACHE_TTL = 30.0
+MPD_MANIFEST_CACHE_MAX = 64
+# Dynamic MPD child playlists are requested sequentially during startup.  Keep
+# one source snapshot for that burst; the generated HLS window has its own
+# shorter live-refresh policy.
+MPD_MANIFEST_CACHE_TTL = 8.0
 
 
 class HLSProxyManifestHandlerMixin:
+
+    @staticmethod
+    def _mpd_manifest_cache_key(url: str, headers: dict) -> str:
+        """Build a short-lived key without retaining credentials in memory."""
+        header_items = tuple(
+            sorted((str(name).lower(), str(value)) for name, value in (headers or {}).items())
+        )
+        payload = repr((url, header_items)).encode("utf-8", "replace")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _get_cached_mpd_manifest(self, url: str, headers: dict):
+        cache = getattr(self, "_mpd_manifest_cache", None)
+        if not cache:
+            return None
+        now = time.monotonic()
+        for key, entry in list(cache.items()):
+            if entry[0] <= now:
+                cache.pop(key, None)
+        entry = cache.get(self._mpd_manifest_cache_key(url, headers))
+        if not entry:
+            return None
+        return entry[1], entry[2], now - entry[3]
+
+    def _store_mpd_manifest(self, url: str, final_url: str, headers: dict, content: str):
+        cache = getattr(self, "_mpd_manifest_cache", None)
+        if cache is None:
+            cache = {}
+            self._mpd_manifest_cache = cache
+        now = time.monotonic()
+        entry = (now + MPD_MANIFEST_CACHE_TTL, content, final_url, now)
+        # Store both sides of redirects: child HLS requests use final_url.
+        for cache_url in {url, final_url}:
+            cache[self._mpd_manifest_cache_key(cache_url, headers)] = entry
+        for key, item in list(cache.items()):
+            if item[0] <= now:
+                cache.pop(key, None)
+        while len(cache) > MPD_MANIFEST_CACHE_MAX:
+            cache.pop(next(iter(cache)), None)
 
     @staticmethod
     def _get_media_playlist_cache_ttl(playlist: str) -> float:
@@ -549,7 +592,18 @@ class HLSProxyManifestHandlerMixin:
                     ssl_context = False
 
                 manifest_content = None
-                retries = 2
+                final_mpd_url = stream_url
+                cached_mpd = self._get_cached_mpd_manifest(stream_url, stream_headers)
+                if cached_mpd:
+                    manifest_content, final_mpd_url, cache_age = cached_mpd
+                    logger.debug(
+                        "[MPD cache] hit age=%.2fs final=%s [%s]",
+                        cache_age,
+                        final_mpd_url,
+                        request_log_context(request, stream_url, extractor=extractor),
+                    )
+
+                retries = 2 if manifest_content is None else 0
                 for attempt in range(retries):
                     mpd_proxy = None
                     mpd_session = None
@@ -611,6 +665,12 @@ class HLSProxyManifestHandlerMixin:
                                 continue
 
                             manifest_content = await resp.text()
+                            self._store_mpd_manifest(
+                                stream_url,
+                                final_mpd_url,
+                                stream_headers,
+                                manifest_content,
+                            )
                             break # Success
 
                     except ALL_PROXY_ERRORS + (asyncio.TimeoutError, ClientConnectionError, OSError) as e:

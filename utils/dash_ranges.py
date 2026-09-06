@@ -85,7 +85,7 @@ def parse_sidx(data, absolute_start):
     raise ValueError('SIDX box missing')
 
 
-async def expand_segment_bases(xml, mpd_url, fetch):
+async def expand_segment_bases(xml, mpd_url, fetch, only_rep_id=None):
     root = ET.fromstring(xml)
     ns = root.tag.split('}')[0] + '}' if '}' in root.tag else ''
 
@@ -106,7 +106,11 @@ async def expand_segment_bases(xml, mpd_url, fetch):
                     effective.append(copy.deepcopy(child))
         if node.find(ns + 'SegmentTemplate') is not None or node.find(ns + 'SegmentList') is not None:
             effective = None
-        if node.tag == ns + 'Representation' and effective is not None:
+        if (
+            node.tag == ns + 'Representation'
+            and effective is not None
+            and (only_rep_id is None or node.get('id') == only_rep_id)
+        ):
             index_range = effective.get('indexRange')
             start, _ = parse_range(index_range)
             scale, segments = parse_sidx(await fetch(base, index_range), start)

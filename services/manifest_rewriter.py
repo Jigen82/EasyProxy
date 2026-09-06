@@ -96,10 +96,14 @@ class ManifestRewriter:
             if parsed.query:
                 tail += "?" + parsed.query
             token = _encode_dash_state(base_directory, stream_headers, clearkey_param,
-                init_url=init_url, init_range=init_range, proxy=forced_proxy, bypass_warp=bypass_warp,
+                resource_url=absolute, init_url=init_url, init_range=init_range,
+                proxy=forced_proxy, bypass_warp=bypass_warp,
                 bypass_proxies=bypass_proxies, extractor_key=extractor_key,
                 stream_key=stream_key)
-            return f"{proxy_base}/proxy/mpd/segment/{token}/{tail}"
+            # Keep the token path opaque: source query parameters belong in
+            # authenticated state, not in the public relay URL query string.
+            safe_tail = urllib.parse.quote(tail or "segment.mp4", safe="._-~$")
+            return f"{proxy_base}/proxy/mpd/segment/{token}/{safe_tail}"
 
         def walk(node, base, inherited=None):
             bases = node.findall(namespace + "BaseURL")

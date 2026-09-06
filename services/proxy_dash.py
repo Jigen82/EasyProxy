@@ -105,9 +105,18 @@ class HLSProxyDashMixin:
                 or "\\" in decoded_path or urlparse(decoded_path).scheme
                 or any(part in (".", "..") for part in decoded_path.split("/"))):
             return web.Response(status=400, text="Invalid DASH segment path")
-        segment_url = urljoin(base_url, path)
-        if getattr(request, "query_string", ""):
-            segment_url += "?" + request.query_string
+        resource_url = routing.get("resource_url")
+        if resource_url:
+            parsed_resource = urlparse(resource_url)
+            if parsed_resource.scheme not in {"http", "https"} or not parsed_resource.netloc:
+                return web.Response(status=400, text="Invalid DASH resource URL")
+            segment_url = resource_url
+        else:
+            # Backward compatibility for tokens generated before resource_url
+            # was sealed into the state.
+            segment_url = urljoin(base_url, path)
+            if getattr(request, "query_string", ""):
+                segment_url += "?" + request.query_string
 
         # Parse clearkey into KID and KEY for decrypter
         kid, key = None, None

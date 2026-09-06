@@ -521,6 +521,12 @@ class HLSProxyStreamingMixin:
                 if header in request.headers:
                     headers[header] = request.headers[header]
 
+            # DASH SegmentList relays carry the source byte-range in the
+            # generated URL. Forward it when the player sends no Range header.
+            source_range = request.query.get("range")
+            if source_range and re.fullmatch(r"\d+-\d+", source_range):
+                headers["Range"] = f"bytes={source_range}"
+
             # Media segments must not be content-encoded in transit.  aiohttp
             # transparently decodes gzip/br, while forwarding the upstream
             # Content-Length would make Safari wait for bytes that no longer
@@ -1341,6 +1347,23 @@ class HLSProxyStreamingMixin:
 
                             # Check if requesting a Media Playlist (Variant)
                             rep_id = request.query.get("rep_id")
+                            # SegmentBase carries the SIDX index and media as
+                            # byte ranges. Expand only the requested variant;
+                            # expanding the master would add an unnecessary
+                            # upstream range request to every startup.
+                            if rep_id and "indexRange" in manifest_content:
+                                from utils.dash_ranges import expand_segment_bases, fetch_range
+
+                                async def _fetch_sidx(url, range_str):
+                                    return await fetch_range(session, url, headers, range_str)
+
+                                manifest_content = await expand_segment_bases(
+                                    manifest_content,
+                                    str(resp.url),
+                                    _fetch_sidx,
+                                    only_rep_id=rep_id,
+                                )
+
                             mpd_params = request.query_string or ""
                             if extractor_key and "extractor_key=" not in mpd_params:
                                 mpd_params = f"{mpd_params}&extractor_key={urllib.parse.quote(extractor_key, safe='')}" if mpd_params else f"extractor_key={urllib.parse.quote(extractor_key, safe='')}"
@@ -1521,7 +1544,6 @@ class HLSProxyStreamingMixin:
                     active_proxy,
                     extractor_key=request.query.get("extractor_key"),
                 )
-            # Do not restart the kernel tunnel from a stream request.
             if active_proxy and getattr(_shared, 'WARP_PROXY_URL', None) and active_proxy == _shared.WARP_PROXY_URL:
                 warp_healthy, warp_reason = await self._probe_warp(timeout_sec=3)
                 if not warp_healthy:
@@ -1530,6 +1552,7 @@ class HLSProxyStreamingMixin:
                         warp_reason,
                         log_context(active_proxy),
                     )
+                    await self._restart_warp_if_socket_unhealthy(warp_reason)
                 else:
                     logger.debug(
                         "WARP proxy healthy; stream failure is upstream source [%s]",
@@ -1779,10 +1802,18 @@ class HLSProxyStreamingMixin:
 
         is_init = request.query.get("is_init") == "1"
         skip_init = request.query.get("skip_init") == "1"
+        init_range = request.query.get("init_range")
+        media_range = request.query.get("media_range")
+
+        for label, value in (("init_range", init_range), ("media_range", media_range)):
+            if value and not re.fullmatch(r"\d+-\d+", value):
+                return web.Response(status=400, text=f"Invalid {label}")
 
         if is_init:
             init_url = url
+            init_range = init_range or media_range
             url = None
+            media_range = None
 
         if not (url or init_url) or not key or not key_id:
             return web.Response(text="Missing url/init_url, key, or key_id", status=400)
@@ -1827,14 +1858,18 @@ class HLSProxyStreamingMixin:
                     OSError,
                 )
 
-                async def fetch_part(session, part_url, timeout, label):
+                async def fetch_part(session, part_url, timeout, label, byte_range=None):
                     if not part_url:
                         return b"", False
                     disable_ssl = get_ssl_setting_for_url(part_url)
+                    part_headers = dict(headers)
+                    if byte_range:
+                        part_headers["Range"] = f"bytes={byte_range}"
+                        part_headers["Accept-Encoding"] = "identity"
                     try:
                         async with session.get(
                             part_url,
-                            headers=headers,
+                            headers=part_headers,
                             ssl=not disable_ssl,
                             timeout=aiohttp.ClientTimeout(total=timeout),
                         ) as resp:
@@ -1882,8 +1917,8 @@ class HLSProxyStreamingMixin:
 
                 # Parallel fetch
                 init_result, segment_result = await asyncio.gather(
-                    fetch_part(segment_session, init_url, 10, "init segment"),
-                    fetch_part(segment_session, url, 15, "segment"),
+                    fetch_part(segment_session, init_url, 10, "init segment", init_range),
+                    fetch_part(segment_session, url, 15, "segment", media_range),
                 )
                 init_content, init_retryable = init_result
                 segment_content, segment_retryable = segment_result
@@ -1898,15 +1933,17 @@ class HLSProxyStreamingMixin:
                 )
                 if can_retry_warp:
                     await self._invalidate_proxy_session(segment_proxy)
-                    if not await self.is_warp_healthy(timeout_sec=3):
+                    warp_healthy, warp_reason = await self._probe_warp(timeout_sec=3)
+                    if not warp_healthy:
                         logger.warning(
-                            "WARP health probe failed; retrying without automatic tunnel restart [%s]",
+                            "WARP health probe failed; retrying after socket recovery check [%s]",
                             request_log_context(
                                 request,
                                 url or init_url,
                                 route=safe_log_route(segment_proxy),
                             ),
                         )
+                        await self._restart_warp_if_socket_unhealthy(warp_reason)
 
                     retry_session, retry_proxy = await self._get_proxy_session(
                         url or init_url,
