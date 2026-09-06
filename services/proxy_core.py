@@ -353,7 +353,7 @@ class HLSProxyCoreMixin:
                     consecutive_failures = 0
                     continue
 
-                healthy, reason = await self._probe_warp(timeout_sec=8)
+                healthy, reason = await self._probe_warp(timeout_sec=12)
                 if healthy:
                     if consecutive_failures:
                         logger.warning(

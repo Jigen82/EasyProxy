@@ -341,6 +341,22 @@ class HLSProxyManifestHandlerMixin:
                         if mpd_session and not mpd_session.closed:
                             await mpd_session.close()
 
+                if "indexRange" in captured_manifest:
+                    try:
+                        from utils.dash_ranges import expand_segment_bases, fetch_range
+                        async def _fetch_sidx(url, range_str):
+                            session, _ = await self._get_proxy_session(
+                                url, bypass_warp=bypass_warp, forced_proxy=selected_proxy
+                            )
+                            try:
+                                return await fetch_range(session, url, stream_headers, range_str)
+                            finally:
+                                if session and not session.closed:
+                                    await session.close()
+                        captured_manifest = await expand_segment_bases(captured_manifest, stream_url, _fetch_sidx)
+                    except Exception as e:
+                        logger.warning(f"Failed to expand DASH SegmentBase indexes: {e}")
+
                 rewritten_mpd = ManifestRewriter.rewrite_mpd_native(
                     manifest_content=captured_manifest,
                     mpd_url=stream_url,
@@ -843,18 +859,6 @@ class HLSProxyManifestHandlerMixin:
                         request_log_context(request, target_url, extractor=extractor),
                     )
                     return web.Response(text="Re-extraction failed", status=502)
-                finally:
-                    _ek2 = self._extractor_key_for_instance(extractor2) if extractor2 else None
-                    if _ek2 and _ek2 in self.extractors:
-                        self.extractors.pop(_ek2, None)
-                        self._extractor_atimes.pop(_ek2, None)
-                        for _sr in [r for r in self._extractor_stream_atimes if r[0] == _ek2]:
-                            self._extractor_stream_atimes.pop(_sr, None)
-                    if extractor2 and hasattr(extractor2, "close"):
-                        try:
-                            await extractor2.close()
-                        except Exception:
-                            pass
 
         except Exception as e:
             error_msg = str(e).lower()

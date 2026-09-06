@@ -205,9 +205,10 @@ class MPDToHLSConverter:
                     audio_reps.append((adaptation_set, representation))
             
             def sort_audio_func(item):
+                adaptation = item[0]
                 rep = item[1]
                 rep_id = rep.get('id', '').lower()
-                codecs = rep.get('codecs', '').lower()
+                codecs = (rep.get('codecs') or adaptation.get('codecs', '')).lower()
                 if 'mp4a' in rep_id or 'aac' in rep_id or 'mp4a' in codecs or 'aac' in codecs:
                     return 0
                 return 1
