@@ -142,6 +142,7 @@ class HLSProxyExtractorHandlerMixin:
                         "mediaset",
                         "wittytv",
                         "raiplay",
+                        "cinejoy",
                     ],
                     "examples": [
                         f"{get_public_base_url(request)}/extractor/video?d=https://vavoo.to/channel/123",
@@ -224,7 +225,9 @@ class HLSProxyExtractorHandlerMixin:
                 extractor.extract(url, **extractor_kwargs), timeout=extractor_timeout
             )
             result_query_params = _protected_extractor_params(result)
-            extractor_key = self._extractor_key_for_instance(extractor)
+            extractor_key = getattr(extractor, "extractor_name", None) or self._extractor_key_for_instance(extractor)
+            if extractor_key:
+                extractor_key = extractor_key.replace("_direct", "").replace("_noproxy", "")
             stream_key = self._stream_key_for_url(request.query.get("orig_url") or url)
 
             stream_url = result["destination_url"]
@@ -485,6 +488,8 @@ class HLSProxyExtractorHandlerMixin:
                     bypass_warp=bypass_warp,
                     forced_proxy=selected_proxy,
                     force_direct=force_direct,
+                    extractor_key=extractor_key,
+                    stream_key=stream_key,
                 )
 
             # 2. URL PULITO (Per il JSON stile MediaFlow)

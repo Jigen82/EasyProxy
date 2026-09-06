@@ -122,11 +122,23 @@ class HLSProxyDashMixin:
             is_init = segment_url == routing.get("init_url")
 
             # Fetch segment
-            if routing.get("bypass_proxies"):
+            extractor_key = routing.get("extractor_key")
+            admin_warp_off, admin_proxy_off = _shared.get_extractor_routing_overrides(extractor_key)
+            bypass_warp = routing.get("bypass_warp", False) or admin_warp_off
+            bypass_proxies = routing.get("bypass_proxies", False) or admin_proxy_off
+            forced_proxy = routing.get("proxy")
+            if bypass_warp and forced_proxy and _shared.is_warp_proxy_url(forced_proxy):
+                forced_proxy = None
+            if bypass_proxies:
+                forced_proxy = None
                 _shared.BYPASS_PROXIES_CONTEXT.set(True)
+
+            if hasattr(self, "_touch_extractor_activity"):
+                self._touch_extractor_activity(extractor_key, routing.get("stream_key"))
+
             _session, _ = await self._get_proxy_session(
-                segment_url, bypass_warp=routing.get("bypass_warp", False),
-                forced_proxy=routing.get("proxy"),
+                segment_url, bypass_warp=bypass_warp,
+                forced_proxy=forced_proxy,
             )
             if not clearkey and getattr(request, "headers", {}).get("Range"):
                 headers["Range"] = request.headers["Range"]
@@ -270,6 +282,19 @@ class HLSProxyDashMixin:
                 forced_proxy = None
                 _shared.BYPASS_PROXIES_CONTEXT.set(True)
             bypass_warp = request.query.get("warp", "").lower() == "off"
+            extractor_key = request.query.get("extractor_key")
+            if extractor_key:
+                ext_warp_off, ext_proxy_off = _shared.get_extractor_routing_overrides(extractor_key)
+                if ext_warp_off:
+                    bypass_warp = True
+                if ext_proxy_off:
+                    forced_proxy = None
+                    _shared.BYPASS_PROXIES_CONTEXT.set(True)
+            if bypass_warp and forced_proxy and _shared.is_warp_proxy_url(forced_proxy):
+                forced_proxy = None
+
+            if hasattr(self, "_touch_extractor_activity"):
+                self._touch_extractor_activity(extractor_key, request.query.get("stream_key"))
 
             _GLOBAL_PROXIES = _shared.GLOBAL_PROXIES
             _ENABLE_WARP = _shared.ENABLE_WARP

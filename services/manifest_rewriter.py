@@ -74,6 +74,8 @@ class ManifestRewriter:
         session_id: str = None,
         forced_proxy: str = None,
         bypass_proxies: bool = False,
+        extractor_key: str = None,
+        stream_key: str = None,
     ) -> str:
         """Riscrive il manifest MPD per DASH nativo (senza conversione HLS)."""
         import copy
@@ -90,7 +92,8 @@ class ManifestRewriter:
                 tail += "?" + parsed.query
             token = _encode_dash_state(base_directory, stream_headers, clearkey_param,
                 init_url=init_url, proxy=forced_proxy, bypass_warp=bypass_warp,
-                bypass_proxies=bypass_proxies)
+                bypass_proxies=bypass_proxies, extractor_key=extractor_key,
+                stream_key=stream_key)
             return f"{proxy_base}/proxy/mpd/segment/{token}/{tail}"
 
         def walk(node, base, inherited=None):
@@ -171,6 +174,8 @@ class ManifestRewriter:
         bypass_proxies: bool = False,
         disable_ssl: bool = False,
         drm_token: str = None,
+        extractor_key: str = None,
+        stream_key: str = None,
     ) -> str:
         """Riscrive i manifest MPD (DASH) per passare attraverso il proxy."""
         try:
@@ -218,6 +223,10 @@ class ManifestRewriter:
 
             if disable_ssl:
                 header_params += "&disable_ssl=1"
+            if extractor_key:
+                header_params += f"&extractor_key={urllib.parse.quote(extractor_key, safe='')}"
+            if stream_key:
+                header_params += f"&stream_key={urllib.parse.quote(stream_key, safe='')}"
 
             def create_proxy_url(relative_url):
                 # Skip proxying if URL contains DASH template variables - player must resolve these
@@ -641,6 +650,10 @@ class ManifestRewriter:
                         proxy_key_url += f"&proxy={urllib.parse.quote(selected_proxy, safe='')}"
                     if force_direct:
                         proxy_key_url += "&direct=1"
+                    if extractor_key:
+                        proxy_key_url += f"&extractor_key={urllib.parse.quote(extractor_key, safe='')}"
+                    if stream_key:
+                        proxy_key_url += f"&stream_key={urllib.parse.quote(stream_key, safe='')}"
 
                     new_line = line[:uri_start] + proxy_key_url + line[uri_end:]
                     rewritten_lines.append(new_line)

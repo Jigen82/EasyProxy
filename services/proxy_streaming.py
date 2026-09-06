@@ -682,7 +682,7 @@ class HLSProxyStreamingMixin:
             )
             return web.Response(text=f"Segment error: {str(e)}", status=500)
 
-    async def _proxy_stream(self, request, stream_url, stream_headers, bypass_warp=None, forced_proxy=None, force_direct=None):
+    async def _proxy_stream(self, request, stream_url, stream_headers, bypass_warp=None, forced_proxy=None, force_direct=None, extractor_key=None, stream_key=None):
         """Effettua il proxy dello stream con gestione manifest e AES-128"""
         is_hls_segment_request = request.path.startswith("/proxy/hls/segment.")
         if bypass_warp is None:
@@ -692,7 +692,8 @@ class HLSProxyStreamingMixin:
         # Keep the admin extractor policy on every relay/segment request. The
         # extracted VidFast URL can point to an internal provider (e.g. Viprow),
         # so relying only on the original query flags would re-enable WARP.
-        extractor_key = request.query.get("extractor_key", "")
+        extractor_key = extractor_key or request.query.get("extractor_key", "")
+        stream_key = stream_key or request.query.get("stream_key")
         admin_warp_off, admin_proxy_off = get_extractor_routing_overrides(extractor_key)
         if admin_warp_off:
             bypass_warp = True
@@ -731,8 +732,8 @@ class HLSProxyStreamingMixin:
 
         try:
             self._touch_extractor_activity(
-                request.query.get("extractor_key"),
-                request.query.get("stream_key"),
+                extractor_key,
+                stream_key,
             )
 
             # ✅ LIVE CDN TOKEN SUBSTITUTION: If the CDN token was refreshed via
@@ -1311,8 +1312,8 @@ class HLSProxyStreamingMixin:
                         disable_ssl=disable_ssl,
                         selected_proxy=forced_proxy, # ✅ PASSA IL PROXY FORZATO
                         force_direct=force_direct,
-                        extractor_key=request.query.get("extractor_key"),
-                        stream_key=request.query.get("stream_key"),
+                        extractor_key=extractor_key or request.query.get("extractor_key"),
+                        stream_key=stream_key or request.query.get("stream_key"),
                     )
                     return web.Response(text=rewritten, headers={
                         "Content-Type": "application/vnd.apple.mpegurl",
@@ -1340,6 +1341,11 @@ class HLSProxyStreamingMixin:
 
                             # Check if requesting a Media Playlist (Variant)
                             rep_id = request.query.get("rep_id")
+                            mpd_params = request.query_string or ""
+                            if extractor_key and "extractor_key=" not in mpd_params:
+                                mpd_params = f"{mpd_params}&extractor_key={urllib.parse.quote(extractor_key, safe='')}" if mpd_params else f"extractor_key={urllib.parse.quote(extractor_key, safe='')}"
+                            if stream_key and "stream_key=" not in mpd_params:
+                                mpd_params = f"{mpd_params}&stream_key={urllib.parse.quote(stream_key, safe='')}" if mpd_params else f"stream_key={urllib.parse.quote(stream_key, safe='')}"
 
                             if rep_id:
                                 # Generate Media Playlist (Segments)
@@ -1348,7 +1354,7 @@ class HLSProxyStreamingMixin:
                                     rep_id,
                                     proxy_base,
                                     stream_url,
-                                    request.query_string,
+                                    mpd_params,
                                     clearkey_param,
                                 )
                                 # Log first few lines for debugging
@@ -1361,7 +1367,7 @@ class HLSProxyStreamingMixin:
                                     manifest_content,
                                     proxy_base,
                                     stream_url,
-                                    request.query_string,
+                                    mpd_params,
                                 )
                                 logger.debug(
                                     f"📜 Generated Master Playlist (first 5 lines):\n{chr(10).join(hls_playlist.splitlines()[:5])}"
@@ -1402,6 +1408,8 @@ class HLSProxyStreamingMixin:
                         bypass_warp=bypass_warp,
                         bypass_proxies=bypass_proxies,
                         drm_token=drm_token,
+                        extractor_key=extractor_key or request.query.get("extractor_key"),
+                        stream_key=stream_key or request.query.get("stream_key"),
                     )
 
                     return web.Response(

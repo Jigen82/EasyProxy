@@ -107,7 +107,20 @@ class MPDToHLSConverter:
         
         header_params = []
         for param in params.split('&'):
-            if param.startswith('h_') or param.startswith('api_password=') or param.startswith('drm_token=') or param.startswith('clearkey=') or param.startswith('ext=') or param.startswith('warp=') or param.startswith('proxy='):
+            if (
+                param.startswith('h_')
+                or param.startswith('api_password=')
+                or param.startswith('drm_token=')
+                or param.startswith('clearkey=')
+                or param.startswith('ext=')
+                or param.startswith('warp=')
+                or param.startswith('proxy=')
+                or param.startswith('extractor_key=')
+                or param.startswith('stream_key=')
+                or param.startswith('orig_url=')
+                or param.startswith('direct=')
+                or param.startswith('disable_ssl=')
+            ):
                 header_params.append(param)
         
         if header_params:

@@ -172,7 +172,8 @@ class HLSProxyManifestHandlerMixin:
                     force_direct=force_direct,
                 )
 
-            extractor_key = None
+            extractor_key = request.query.get("extractor_key")
+            stream_key = request.query.get("stream_key")
             captured_manifest = None
             is_rewritten_hls_segment = request.path.startswith("/proxy/hls/segment.")
             if is_rewritten_hls_segment:
@@ -191,15 +192,15 @@ class HLSProxyManifestHandlerMixin:
                     }:
                         continue
                     stream_headers[header_name] = header_value
-                extractor_key = request.query.get("extractor_key")
-                stream_key = request.query.get("stream_key")
             else:
                 extractor = await self.get_extractor(target_url, combined_headers, bypass_warp=bypass_warp)
 
                 # The first resolver call identifies the extractor. Apply its
                 # admin routing policy before the actual extraction, then use a
                 # routing-specific cached extractor instance.
-                extractor_key = self._extractor_key_for_instance(extractor)
+                resolved_key = self._extractor_key_for_instance(extractor)
+                if not extractor_key or (resolved_key and not resolved_key.startswith("generic")):
+                    extractor_key = resolved_key or extractor_key
                 admin_warp_off, admin_proxy_off = get_extractor_routing_overrides(extractor_key)
                 routing_changed = False
                 if admin_warp_off and not bypass_warp:
@@ -217,7 +218,9 @@ class HLSProxyManifestHandlerMixin:
                     extractor = await self.get_extractor(
                         target_url, combined_headers, bypass_warp=bypass_warp
                     )
-                    extractor_key = self._extractor_key_for_instance(extractor)
+                    resolved_key = self._extractor_key_for_instance(extractor)
+                    if not extractor_key or (resolved_key and not resolved_key.startswith("generic")):
+                        extractor_key = resolved_key or extractor_key
 
                 # ✅ FIX CRITICO: Forza l'aggiornamento degli header dell'estrattore.
                 # Siccome gli estrattori vengono memorizzati in self.extractors (cache),
@@ -235,8 +238,10 @@ class HLSProxyManifestHandlerMixin:
                     bypass_warp=bypass_warp,
                     proxy=request.query.get("proxy")
                 )
-                extractor_key = self._extractor_key_for_instance(extractor)
-                stream_key = self._stream_key_for_url(request.query.get("orig_url") or target_url)
+                resolved_key = self._extractor_key_for_instance(extractor)
+                if not extractor_key or (resolved_key and not resolved_key.startswith("generic")):
+                    extractor_key = resolved_key or extractor_key
+                stream_key = stream_key or self._stream_key_for_url(request.query.get("orig_url") or target_url)
                 bypass_warp = result.get("bypass_warp", bypass_warp)
                 stream_url = result["destination_url"]
                 stream_headers = result.get("request_headers", {})
@@ -345,6 +350,8 @@ class HLSProxyManifestHandlerMixin:
                     bypass_warp=bypass_warp,
                     bypass_proxies=bypass_proxies,
                     forced_proxy=selected_proxy,
+                    extractor_key=extractor_key,
+                    stream_key=stream_key,
                 )
 
                 return web.Response(
@@ -702,6 +709,10 @@ class HLSProxyManifestHandlerMixin:
                     params += "&warp=off"
                 if bypass_proxies:
                     params += "&proxy=off"
+                if extractor_key:
+                    params += f"&extractor_key={urllib.parse.quote(extractor_key, safe='')}"
+                if stream_key:
+                    params += f"&stream_key={urllib.parse.quote(stream_key, safe='')}"
 
                 # Check if requesting specific representation
                 rep_id = request.query.get("rep_id")
@@ -760,7 +771,7 @@ class HLSProxyManifestHandlerMixin:
                 )
 
             # Procedi con il proxy dello stream (passando l'eventuale bypass_warp attivato dall'estrattore e il proxy selezionato)
-            return await self._proxy_stream(request, stream_url, stream_headers, bypass_warp=bypass_warp, forced_proxy=selected_proxy, force_direct=force_direct)
+            return await self._proxy_stream(request, stream_url, stream_headers, bypass_warp=bypass_warp, forced_proxy=selected_proxy, force_direct=force_direct, extractor_key=extractor_key, stream_key=stream_key)
 
         except ProxyDeadRetryError:
             if getattr(request, '_extraction_retried', False):
@@ -824,7 +835,7 @@ class HLSProxyManifestHandlerMixin:
                             extractor=extractor2,
                         ),
                     )
-                    return await self._proxy_stream(request, stream_url2, stream_headers2, bypass_warp=bypass_warp, forced_proxy=selected_proxy2, force_direct=force_direct2)
+                    return await self._proxy_stream(request, stream_url2, stream_headers2, bypass_warp=bypass_warp, forced_proxy=selected_proxy2, force_direct=force_direct2, extractor_key=extractor_key, stream_key=stream_key)
                 except Exception as retry_err:
                     logger.error(
                         "Re-extraction failed: %s [%s]",
