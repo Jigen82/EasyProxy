@@ -79,8 +79,48 @@ def _split_bind(bind: str) -> tuple[str, int]:
     return host, int(match.group("port"))
 
 
-def _write_torrc() -> None:
+def _tor_identity() -> tuple[int | None, int | None]:
+    """Return the Debian Tor uid/gid when the app can prepare them."""
+    if os.name == "nt" or getattr(os, "geteuid", lambda: 1)() != 0:
+        return None, None
+    try:
+        import pwd
+        account = pwd.getpwnam("debian-tor")
+    except (ImportError, KeyError):
+        return None, None
+    # Use the account's primary gid; the group name is not guaranteed to
+    # match the username on every VPS image.
+    return account.pw_uid, account.pw_gid
+
+
+def _repair_tor_data_permissions(tor_uid: int, tor_gid: int) -> None:
+    """Make the bind-mounted Tor state readable/writable by debian-tor."""
     os.makedirs(TOR_DATA_DIR, exist_ok=True)
+    os.chown(TOR_DATA_DIR, tor_uid, tor_gid)
+    os.chmod(TOR_DATA_DIR, 0o700)
+    for root, dirs, files in os.walk(TOR_DATA_DIR):
+        for name in dirs:
+            path = os.path.join(root, name)
+            os.chown(path, tor_uid, tor_gid)
+            os.chmod(path, 0o700)
+        for name in files:
+            path = os.path.join(root, name)
+            os.chown(path, tor_uid, tor_gid)
+            os.chmod(path, 0o600)
+
+
+def _write_torrc() -> None:
+    tor_uid, tor_gid = _tor_identity()
+    run_as_debian_tor = tor_uid is not None and tor_gid is not None
+    if run_as_debian_tor:
+        try:
+            _repair_tor_data_permissions(tor_uid, tor_gid)
+        except OSError as exc:
+            raise TorError(
+                f"Cannot set permissions on {TOR_DATA_DIR} for debian-tor: {exc}"
+            ) from exc
+    else:
+        os.makedirs(TOR_DATA_DIR, exist_ok=True)
     host, port = _split_bind(get_bind())
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
@@ -96,25 +136,16 @@ def _write_torrc() -> None:
         f"Log notice file {TOR_LOG_PATH}",
     ]
     # Debian's package user prevents Tor from running as root in Docker.
-    if os.name != "nt" and os.geteuid() == 0:
-        try:
-            import pwd
-            pwd.getpwnam("debian-tor")
-        except (ImportError, KeyError):
-            pass
-        else:
-            import grp
-            try:
-                os.chown(TOR_DATA_DIR, pwd.getpwnam("debian-tor").pw_uid, grp.getgrnam("debian-tor").gr_gid)
-            except (OSError, KeyError):
-                pass
-            lines.append("User debian-tor")
+    if run_as_debian_tor:
+        lines.append("User debian-tor")
     with open(TORRC_PATH, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
     try:
-        os.chmod(TORRC_PATH, 0o644)
-    except OSError:
-        pass
+        if run_as_debian_tor:
+            os.chown(TORRC_PATH, tor_uid, tor_gid)
+        os.chmod(TORRC_PATH, 0o600)
+    except OSError as exc:
+        raise TorError(f"Cannot set permissions on {TORRC_PATH}: {exc}") from exc
 
 
 async def _port_ready(host: str, port: int) -> bool:
@@ -137,6 +168,67 @@ async def _control_command(reader, writer, command: str) -> None:
         if line.startswith("4") or line.startswith("5"):
             raise TorError(line)
     raise TorError("Unexpected Tor control response")
+
+
+def _log_tail(lines: int = 24) -> str:
+    try:
+        with open(TOR_LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
+            content = "".join(handle.readlines()[-lines:]).strip()
+    except OSError:
+        return "No Tor log output."
+    return content or "No Tor log output."
+
+
+async def _terminate(process: asyncio.subprocess.Process | None) -> None:
+    if not process or process.returncode is not None:
+        return
+    try:
+        process.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return
+        await process.wait()
+
+
+async def _process_output(process: asyncio.subprocess.Process) -> str:
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        return ""
+    chunks = []
+    for payload in (stderr, stdout):
+        if payload:
+            text = payload.decode("utf-8", "replace").strip()
+            if text:
+                chunks.append(text)
+    return " | ".join(chunks)
+
+
+async def _verify_config() -> None:
+    process = await asyncio.create_subprocess_exec(
+        "tor", "--verify-config", "-f", TORRC_PATH,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise TorError("Tor configuration verification timed out")
+    output = " ".join(
+        part.decode("utf-8", "replace").strip()
+        for part in (stderr, stdout)
+        if part and part.decode("utf-8", "replace").strip()
+    )
+    if process.returncode != 0:
+        raise TorError(f"Invalid Tor configuration (code {process.returncode}): {output or 'no output'}")
 
 
 async def new_identity() -> None:
@@ -163,42 +255,53 @@ async def new_identity() -> None:
 async def start() -> None:
     global _process
     async with _lock:
-        if _process and _process.returncode is None:
-            return
+        if _process is not None:
+            if _process.returncode is None:
+                return
+            _process = None
         if not available():
             raise TorError("Tor is not installed; use the EasyProxy Docker image")
         set_bind(get_bind())
         _write_torrc()
-        _process = await asyncio.create_subprocess_exec(
+        await _verify_config()
+        process = await asyncio.create_subprocess_exec(
             "tor", "-f", TORRC_PATH, "--RunAsDaemon", "0",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        _process = process
         host, port = _split_bind(get_bind())
         deadline = time.monotonic() + TOR_BOOTSTRAP_TIMEOUT
-        while time.monotonic() < deadline:
-            if _process.returncode is not None:
-                raise TorError("Tor exited during startup; inspect Tor logs")
-            if await _port_ready(host, port):
-                logger.info("Tor SOCKS5 ready on %s:%s", host, port)
-                return
-            await asyncio.sleep(1)
-        await stop()
-        raise TorError("Tor did not open its SOCKS5 port in time")
+        ready = False
+        try:
+            while time.monotonic() < deadline:
+                if process.returncode is not None:
+                    output = await _process_output(process)
+                    detail = " | ".join(part for part in (output, _log_tail()) if part and part != "No Tor log output.")
+                    raise TorError(
+                        f"Tor exited during startup (code {process.returncode}): {detail or 'no Tor output'}"
+                    )
+                if await _port_ready(host, port):
+                    logger.info("Tor SOCKS5 ready on %s:%s", host, port)
+                    ready = True
+                    return
+                await asyncio.sleep(1)
+            raise TorError(f"Tor did not open its SOCKS5 port in time: {_log_tail()}")
+        finally:
+            if not ready:
+                if _process is process:
+                    _process = None
+                await _terminate(process)
+            elif _process is process and process.returncode is not None:
+                _process = None
 
 
 async def stop() -> None:
     global _process
-    process = _process
-    _process = None
-    if not process or process.returncode is not None:
-        return
-    process.send_signal(signal.SIGTERM)
-    try:
-        await asyncio.wait_for(process.wait(), timeout=10)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
+    async with _lock:
+        process = _process
+        _process = None
+        await _terminate(process)
 
 
 async def restart() -> None:
@@ -230,11 +333,7 @@ async def check() -> dict:
 
 
 async def logs(lines: int = 120) -> str:
-    try:
-        with open(TOR_LOG_PATH, "r", encoding="utf-8", errors="replace") as handle:
-            return "".join(handle.readlines()[-lines:])
-    except OSError:
-        return "No Tor log output."
+    return _log_tail(lines)
 
 
 async def status(with_probe: bool = False) -> dict:
